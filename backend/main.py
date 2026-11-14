@@ -2,9 +2,11 @@ import models
 import schemas
 import crud
 import security
+import pdf_analyzer
+from security import obtener_usuario_actual
 from database import engine, get_db
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
@@ -49,11 +51,21 @@ def create_usuario(usuario: schemas.UsuarioCreate, db: Session = Depends(get_db)
     return crud.create_usuario(db=db, usuario=usuario)
 
 
-@app.get(
-    "/usuarios/", response_model=list[schemas.UsuarioResponse], tags=["Usuarios"]
-)
-def read_usuarios(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+# Proteger la consulta de usuarios: solo usuarios autenticados pueden ver la lista
+@app.get("/usuarios/", response_model=list[schemas.UsuarioResponse], tags=["Usuarios"])
+def read_usuarios(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
+):
     return crud.get_usuarios(db, skip=skip, limit=limit)
+
+
+# Endpoint de prueba para verificar el perfil del usuario autenticado
+@app.get("/usuarios/me", response_model=schemas.UsuarioResponse, tags=["Usuarios"])
+def read_usuario_me(usuario_actual: models.Usuario = Depends(obtener_usuario_actual)):
+    return usuario_actual
 
 
 # ==========================================
@@ -90,21 +102,36 @@ def login_para_obtener_access_token(
 
     return {"access_token": access_token, "token_type": "bearer"}
 
-from security import obtener_usuario_actual
 
-# ... resto de tu main.py ...
-
-# Proteger la consulta de usuarios: solo usuarios autenticados pueden ver la lista
-@app.get("/usuarios/", response_model=list[schemas.UsuarioResponse], tags=["Usuarios"])
-def read_usuarios(
-    skip: int = 0, 
-    limit: int = 100, 
+# ==========================================
+# ENDPOINTS PARA AUDITORÍA ISO/IEC 27001:2022
+# ==========================================
+@app.post("/auditoria/analizar-pdf/", tags=["Auditoría ISO 27001"])
+async def analizar_documento_pdf(
+    file: UploadFile = File(...),
+    area_organizativa: str = Form("Tecnologías de la Información"),
+    nivel_confidencialidad: int = Form(4, ge=1, le=5),
+    nivel_integridad: int = Form(4, ge=1, le=5),
+    nivel_disponibilidad: int = Form(3, ge=1, le=5),
     db: Session = Depends(get_db),
-    usuario_actual: models.Usuario = Depends(obtener_usuario_actual) # <--- Protección JWT
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
 ):
-    return crud.get_usuarios(db, skip=skip, limit=limit)
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400, detail="El archivo debe estar en formato PDF."
+        )
 
-# Endpoint de prueba para verificar el perfil del usuario autenticado
-@app.get("/usuarios/me", response_model=schemas.UsuarioResponse, tags=["Usuarios"])
-def read_usuario_me(usuario_actual: models.Usuario = Depends(obtener_usuario_actual)):
-    return usuario_actual
+    contenido = await file.read()
+    try:
+        return pdf_analyzer.analizar_pdf_iso27001(
+            db=db,
+            id_usuario=usuario_actual.id_usuario,
+            nombre_archivo=file.filename,
+            contenido_bytes=contenido,
+            area_organizativa=area_organizativa,
+            confidencialidad=nivel_confidencialidad,
+            integridad=nivel_integridad,
+            disponibilidad=nivel_disponibilidad,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
