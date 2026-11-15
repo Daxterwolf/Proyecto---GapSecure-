@@ -135,3 +135,54 @@ async def analizar_documento_pdf(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+# ==========================================
+# ENDPOINTS PARA EL DASHBOARD
+# ==========================================
+
+@app.get("/dashboard/resumen", tags=["Dashboard"])
+def get_dashboard_resumen(
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual)
+):
+    return crud.obtener_resumen_dashboard(db=db, id_usuario=usuario_actual.id_usuario)
+
+
+@app.get("/dashboard/activos", tags=["Dashboard"])
+def get_dashboard_activos(
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual)
+):
+    return crud.listar_activos_usuario(db=db, id_usuario=usuario_actual.id_usuario)
+
+
+@app.get("/dashboard/activos/{id_activo}/detalle", tags=["Dashboard"])
+def get_dashboard_activo_detalle(
+    id_activo: int,
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual)
+):
+    detalle = crud.obtener_detalle_activo(
+        db=db,
+        id_activo=id_activo,
+        id_usuario=usuario_actual.id_usuario
+    )
+    if not detalle:
+        raise HTTPException(
+            status_code=404,
+            detail="Activo no encontrado o no pertenece al usuario autenticado."
+        )
+    return detalle
+
+
+@app.get("/dashboard/historial", tags=["Dashboard"])
+def get_dashboard_historial(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual)
+):
+    return crud.listar_historial_auditoria(
+        db=db,
+        id_usuario=usuario_actual.id_usuario,
+        limit=limit
+    )
