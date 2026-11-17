@@ -7,6 +7,7 @@ from security import obtener_usuario_actual
 from database import engine, get_db
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
@@ -16,7 +17,13 @@ load_dotenv(dotenv_path="../.env")
 
 # Iniciar la aplicación
 app = FastAPI(title="GapSecure API")
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/", tags=["Inicio"])
 def read_root():
