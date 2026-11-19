@@ -47,3 +47,12 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     correo: str | None = None
+    
+class UsuarioUpdate(BaseModel):
+    id_rol: Optional[int] = None
+    nombre_completo: Optional[str] = None
+    rut: Optional[str] = None
+    correo: Optional[EmailStr] = None
+    es_2fa_activo: Optional[bool] = None
+    activo: Optional[bool] = None
+    password: Optional[str] = None

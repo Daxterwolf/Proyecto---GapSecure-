@@ -214,3 +214,36 @@ def listar_historial_auditoria(db: Session, id_usuario: int, limit: int = 50):
         .all()
     )
     return registros
+
+def update_usuario(db: Session, id_usuario: int, datos: schemas.UsuarioUpdate):
+    db_usuario = db.query(models.Usuario).filter(models.Usuario.id_usuario == id_usuario).first()
+    if not db_usuario:
+        return None
+
+    if datos.nombre_completo is not None:
+        db_usuario.nombre_completo = datos.nombre_completo
+    if datos.rut is not None:
+        db_usuario.rut = datos.rut
+    if datos.correo is not None:
+        db_usuario.correo = datos.correo
+    if datos.id_rol is not None:
+        db_usuario.id_rol = datos.id_rol
+    if datos.es_2fa_activo is not None:
+        db_usuario.es_2fa_activo = datos.es_2fa_activo
+    if datos.activo is not None:
+        db_usuario.activo = datos.activo
+    if datos.password:
+        db_usuario.password_hash = security.obtener_hash_password(datos.password)
+
+    db.commit()
+    db.refresh(db_usuario)
+    return db_usuario
+
+
+def delete_usuario(db: Session, id_usuario: int):
+    db_usuario = db.query(models.Usuario).filter(models.Usuario.id_usuario == id_usuario).first()
+    if not db_usuario:
+        return False
+    db.delete(db_usuario)
+    db.commit()
+    return True

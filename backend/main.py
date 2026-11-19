@@ -25,6 +25,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def requerir_admin(
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
+) -> models.Usuario:
+    if usuario_actual.id_rol != 1:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado: se requieren privilegios de Administrador.",
+        )
+    return usuario_actual
+
+
 @app.get("/", tags=["Inicio"])
 def read_root():
     return {"message": "¡Servidor GapSecure funcionando correctamente!"}
@@ -44,10 +56,14 @@ def read_roles(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
 
 
 # ==========================================
-# ENDPOINTS PARA USUARIOS
+# ENDPOINTS PARA USUARIOS (SOLO ADMINISTRADOR)
 # ==========================================
 @app.post("/usuarios/", response_model=schemas.UsuarioResponse, tags=["Usuarios"])
-def create_usuario(usuario: schemas.UsuarioCreate, db: Session = Depends(get_db)):
+def create_usuario(
+    usuario: schemas.UsuarioCreate,
+    db: Session = Depends(get_db),
+    admin_actual: models.Usuario = Depends(requerir_admin),
+):
     # Verificar si el correo ya existe por seguridad
     db_usuario = crud.get_usuario_by_correo(db, correo=usuario.correo)
     if db_usuario:
@@ -58,21 +74,50 @@ def create_usuario(usuario: schemas.UsuarioCreate, db: Session = Depends(get_db)
     return crud.create_usuario(db=db, usuario=usuario)
 
 
-# Proteger la consulta de usuarios: solo usuarios autenticados pueden ver la lista
+# Proteger la consulta de usuarios: solo administradores pueden ver la lista
 @app.get("/usuarios/", response_model=list[schemas.UsuarioResponse], tags=["Usuarios"])
 def read_usuarios(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
+    admin_actual: models.Usuario = Depends(requerir_admin),
 ):
     return crud.get_usuarios(db, skip=skip, limit=limit)
 
 
-# Endpoint de prueba para verificar el perfil del usuario autenticado
+# Endpoint para verificar el perfil del usuario autenticado (Admin o Auditor)
 @app.get("/usuarios/me", response_model=schemas.UsuarioResponse, tags=["Usuarios"])
 def read_usuario_me(usuario_actual: models.Usuario = Depends(obtener_usuario_actual)):
     return usuario_actual
+
+
+@app.put("/usuarios/{id_usuario}", response_model=schemas.UsuarioResponse, tags=["Usuarios"])
+def update_usuario_endpoint(
+    id_usuario: int,
+    datos: schemas.UsuarioUpdate,
+    db: Session = Depends(get_db),
+    admin_actual: models.Usuario = Depends(requerir_admin),
+):
+    actualizado = crud.update_usuario(db=db, id_usuario=id_usuario, datos=datos)
+    if not actualizado:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return actualizado
+
+
+@app.delete("/usuarios/{id_usuario}", tags=["Usuarios"])
+def delete_usuario_endpoint(
+    id_usuario: int,
+    db: Session = Depends(get_db),
+    admin_actual: models.Usuario = Depends(requerir_admin),
+):
+    if id_usuario == admin_actual.id_usuario:
+        raise HTTPException(
+            status_code=400, detail="No puedes eliminar tu propia cuenta activa."
+        )
+    eliminado = crud.delete_usuario(db=db, id_usuario=id_usuario)
+    if not eliminado:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return {"message": "Usuario eliminado correctamente"}
 
 
 # ==========================================
@@ -142,15 +187,15 @@ async def analizar_documento_pdf(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
+
 # ==========================================
 # ENDPOINTS PARA EL DASHBOARD
 # ==========================================
-
 @app.get("/dashboard/resumen", tags=["Dashboard"])
 def get_dashboard_resumen(
     db: Session = Depends(get_db),
-    usuario_actual: models.Usuario = Depends(obtener_usuario_actual)
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
 ):
     return crud.obtener_resumen_dashboard(db=db, id_usuario=usuario_actual.id_usuario)
 
@@ -158,7 +203,7 @@ def get_dashboard_resumen(
 @app.get("/dashboard/activos", tags=["Dashboard"])
 def get_dashboard_activos(
     db: Session = Depends(get_db),
-    usuario_actual: models.Usuario = Depends(obtener_usuario_actual)
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
 ):
     return crud.listar_activos_usuario(db=db, id_usuario=usuario_actual.id_usuario)
 
@@ -167,17 +212,17 @@ def get_dashboard_activos(
 def get_dashboard_activo_detalle(
     id_activo: int,
     db: Session = Depends(get_db),
-    usuario_actual: models.Usuario = Depends(obtener_usuario_actual)
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
 ):
     detalle = crud.obtener_detalle_activo(
         db=db,
         id_activo=id_activo,
-        id_usuario=usuario_actual.id_usuario
+        id_usuario=usuario_actual.id_usuario,
     )
     if not detalle:
         raise HTTPException(
             status_code=404,
-            detail="Activo no encontrado o no pertenece al usuario autenticado."
+            detail="Activo no encontrado o no pertenece al usuario autenticado.",
         )
     return detalle
 
@@ -186,10 +231,10 @@ def get_dashboard_activo_detalle(
 def get_dashboard_historial(
     limit: int = 50,
     db: Session = Depends(get_db),
-    usuario_actual: models.Usuario = Depends(obtener_usuario_actual)
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
 ):
     return crud.listar_historial_auditoria(
         db=db,
         id_usuario=usuario_actual.id_usuario,
-        limit=limit
+        limit=limit,
     )

@@ -1,567 +1,833 @@
 "use client";
 
-import { useEffect, useState, FormEvent } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  getToken,
-  removeToken,
-  getDashboardResumen,
-  getDashboardActivos,
-  getDashboardActivoDetalle,
-  getDashboardHistorial,
-  analizarPdfAuditoria,
-  ResumenDashboard,
   ActivoItem,
   DetalleActivo,
   RegistroHistorial,
+  ResumenDashboard,
+  UsuarioSistema,
+  actualizarUsuario,
+  analizarPdfAuditoria,
+  crearUsuario,
+  eliminarUsuario,
+  getDashboardActivoDetalle,
+  getDashboardActivos,
+  getDashboardHistorial,
+  getDashboardResumen,
+  getToken,
+  getUsuarioActual,
+  getUsuarios,
+  removeToken,
 } from "@/lib/api";
 
 export default function DashboardPage() {
   const router = useRouter();
+  const [usuario, setUsuario] = useState<UsuarioSistema | null>(null);
   const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState("");
-  const [tabActiva, setTabActiva] = useState<"activos" | "nueva" | "historial">("activos");
+  const [errorGlobal, setErrorGlobal] = useState<string | null>(null);
 
-  // Estados de datos
+  // Datos compartidos de auditoría
   const [resumen, setResumen] = useState<ResumenDashboard | null>(null);
   const [activos, setActivos] = useState<ActivoItem[]>([]);
   const [historial, setHistorial] = useState<RegistroHistorial[]>([]);
+  const [detalleActivo, setDetalleActivo] = useState<DetalleActivo | null>(null);
 
-  // Estados de detalle de activo
-  const [detalleSeleccionado, setDetalleSeleccionado] = useState<DetalleActivo | null>(null);
-  const [cargandoDetalle, setCargandoDetalle] = useState(false);
-  const [filtroCriticidad, setFiltroCriticidad] = useState<string>("Todas");
+  // Datos exclusivos de Administrador
+  const [usuarios, setUsuarios] = useState<UsuarioSistema[]>([]);
+  const [tabAdmin, setTabAdmin] = useState<"usuarios" | "auditoria" | "bitacora">("usuarios");
+  const [modalUsuario, setModalUsuario] = useState(false);
+  const [editandoUsuario, setEditandoUsuario] = useState<UsuarioSistema | null>(null);
+  const [formUser, setFormUser] = useState({
+    nombre_completo: "",
+    rut: "",
+    correo: "",
+    password: "",
+    id_rol: 2,
+    activo: true,
+  });
+  const [guardandoUser, setGuardandoUser] = useState(false);
 
-  // Estados formulario subida PDF
+  // Datos exclusivos de Auditor (Carga PDF y revisión)
+  const [tabAuditor, setTabAuditor] = useState<"subir" | "resultados">("subir");
   const [archivoPdf, setArchivoPdf] = useState<File | null>(null);
-  const [areaOrganizativa, setAreaOrganizativa] = useState("Seguridad de la Información");
-  const [confidencialidad, setConfidencialidad] = useState(4);
-  const [integridad, setIntegridad] = useState(4);
-  const [disponibilidad, setDisponibilidad] = useState(3);
+  const [areaOrganizativa, setAreaOrganizativa] = useState("Tecnologías de la Información");
+  const [cid, setCid] = useState({ c: 4, i: 4, d: 3 });
   const [analizandoPdf, setAnalizandoPdf] = useState(false);
-  const [mensajeExito, setMensajeExito] = useState("");
+  const [mensajeAuditor, setMensajeAuditor] = useState<string | null>(null);
 
-  async function cargarDatosDashboard() {
-    setCargando(true);
-    setError("");
+  const esAdmin = usuario?.id_rol === 1;
+
+  const cargarDatos = async () => {
     try {
+      setErrorGlobal(null);
+      const perfil = await getUsuarioActual();
+      setUsuario(perfil);
+
       const [resData, actData, histData] = await Promise.all([
         getDashboardResumen(),
         getDashboardActivos(),
         getDashboardHistorial(),
       ]);
+
       setResumen(resData);
       setActivos(actData);
       setHistorial(histData);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Error cargando el dashboard";
-      setError(msg);
-      if (msg.includes("Sesión expirada")) {
-        router.push("/login");
+
+      if (actData.length > 0 && !detalleActivo) {
+        const det = await getDashboardActivoDetalle(actData[0].id_activo);
+        setDetalleActivo(det);
       }
+
+      if (perfil.id_rol === 1) {
+        const listaUsers = await getUsuarios();
+        setUsuarios(listaUsers);
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message.includes("Sesión expirada")) {
+        router.push("/login");
+        return;
+      }
+      setErrorGlobal(err instanceof Error ? err.message : "Error cargando datos SGSI");
     } finally {
       setCargando(false);
     }
-  }
+  };
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
+    if (!getToken()) {
       router.push("/login");
       return;
     }
-    cargarDatosDashboard();
-  }, [router]);
+    cargarDatos();
+  }, []);
 
-  async function handleVerDetalle(idActivo: number) {
-    setCargandoDetalle(true);
-    setFiltroCriticidad("Todas");
-    try {
-      const data = await getDashboardActivoDetalle(idActivo);
-      setDetalleSeleccionado(data);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "No se pudo cargar el detalle");
-    } finally {
-      setCargandoDetalle(false);
-    }
-  }
+  const cerrarSesion = () => {
+    removeToken();
+    router.push("/login");
+  };
 
-  async function handleSubirPdf(e: FormEvent) {
+  // --- ACCIONES DE ADMINISTRADOR ---
+  const abrirCrearUsuario = () => {
+    setEditandoUsuario(null);
+    setFormUser({
+      nombre_completo: "",
+      rut: "",
+      correo: "",
+      password: "",
+      id_rol: 2,
+      activo: true,
+    });
+    setModalUsuario(true);
+  };
+
+  const abrirEditarUsuario = (u: UsuarioSistema) => {
+    setEditandoUsuario(u);
+    setFormUser({
+      nombre_completo: u.nombre_completo,
+      rut: u.rut,
+      correo: u.correo,
+      password: "",
+      id_rol: u.id_rol,
+      activo: u.activo,
+    });
+    setModalUsuario(true);
+  };
+
+  const guardarUsuario = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!archivoPdf) {
-      setError("Selecciona un archivo PDF antes de iniciar la auditoría.");
-      return;
+    setGuardandoUser(true);
+    try {
+      if (editandoUsuario) {
+        await actualizarUsuario(editandoUsuario.id_usuario, {
+          nombre_completo: formUser.nombre_completo,
+          rut: formUser.rut,
+          correo: formUser.correo,
+          id_rol: formUser.id_rol,
+          activo: formUser.activo,
+          ...(formUser.password ? { password: formUser.password } : {}),
+        });
+      } else {
+        await crearUsuario({
+          nombre_completo: formUser.nombre_completo,
+          rut: formUser.rut,
+          correo: formUser.correo,
+          password: formUser.password,
+          id_rol: formUser.id_rol,
+          activo: true,
+        });
+      }
+      setModalUsuario(false);
+      const lista = await getUsuarios();
+      setUsuarios(lista);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Error al guardar usuario");
+    } finally {
+      setGuardandoUser(false);
     }
+  };
 
+  const handleEliminarUsuario = async (u: UsuarioSistema) => {
+    if (!confirm(`¿Seguro que deseas eliminar permanentemente a ${u.correo}?`)) return;
+    try {
+      await eliminarUsuario(u.id_usuario);
+      setUsuarios(usuarios.filter((item) => item.id_usuario !== u.id_usuario));
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "No se pudo eliminar el usuario");
+    }
+  };
+
+  // --- ACCIONES DE AUDITOR ---
+  const handleSubirPdf = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!archivoPdf) return;
     setAnalizandoPdf(true);
-    setError("");
-    setMensajeExito("");
-
+    setMensajeAuditor(null);
     try {
       await analizarPdfAuditoria({
         archivo: archivoPdf,
         area_organizativa: areaOrganizativa,
-        nivel_confidencialidad: confidencialidad,
-        nivel_integridad: integridad,
-        nivel_disponibilidad: disponibilidad,
+        nivel_confidencialidad: cid.c,
+        nivel_integridad: cid.i,
+        nivel_disponibilidad: cid.d,
       });
-
-      setMensajeExito(`Auditoría completada sobre "${archivoPdf.name}".`);
       setArchivoPdf(null);
-      await cargarDatosDashboard();
-      setTabActiva("activos");
+      setMensajeAuditor("Documento auditado exitosamente bajo ISO/IEC 27001:2022.");
+      await cargarDatos();
+      setTabAuditor("resultados");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Error al analizar el PDF");
+      setMensajeAuditor(err instanceof Error ? err.message : "Error al analizar PDF");
     } finally {
       setAnalizandoPdf(false);
     }
-  }
+  };
 
-  function handleCerrarSesion() {
-    removeToken();
-    router.push("/login");
-  }
+  const seleccionarActivo = async (idActivo: number) => {
+    try {
+      const det = await getDashboardActivoDetalle(idActivo);
+      setDetalleActivo(det);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Error al obtener detalle");
+    }
+  };
 
   if (cargando) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-200 flex items-center justify-center">
-        <p className="text-sm animate-pulse">Cargando métricas SGSI ISO 27001:2022...</p>
+      <div className="min-h-screen bg-[#121a2a] flex items-center justify-center text-[#d4af6a] tracking-[0.35em] text-xs uppercase">
+        VERIFICANDO CREDENCIALES SGSI...
       </div>
     );
   }
 
-  const sugerenciasFiltradas =
-    detalleSeleccionado?.sugerencias_remediacion.filter((s) =>
-      filtroCriticidad === "Todas" ? true : s.nivel_criticidad === filtroCriticidad
-    ) || [];
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* Barra superior */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-20">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 font-bold flex items-center justify-center">
-              GS
-            </div>
-            <div>
-              <h1 className="font-bold text-lg text-white leading-none">GapSecure</h1>
-              <span className="text-xs text-slate-400">
-                Auditoría Automatizada ISO/IEC 27001:2022
-              </span>
-            </div>
+    <div className="min-h-screen bg-[#121a2a] text-slate-100 flex flex-col">
+      {/* BARRA SUPERIOR EDITORIAL */}
+      <header className="border-b border-slate-400/15 bg-[#162033]/90 backdrop-blur-md px-6 md:px-10 py-4 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div className="h-9 w-9 rounded-lg border border-[#d4af6a]/40 bg-[#1b273d] flex items-center justify-center text-[#d4af6a] font-semibold text-xs tracking-widest">
+            GS
+          </div>
+          <div>
+            <h1 className="text-lg font-light tracking-[0.32em] text-[#d4af6a] uppercase">
+              GAPSECURE
+            </h1>
+            <p className="text-[10px] tracking-[0.22em] text-slate-400 uppercase">
+              {esAdmin ? "CONSOLA DE ADMINISTRACIÓN SGSI" : "PORTAL DE AUDITORÍA ISO/IEC 27001:2022"}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <div className="text-right hidden sm:block">
+            <p className="text-xs font-medium text-slate-200">
+              {usuario?.nombre_completo || usuario?.correo}
+            </p>
+            <span
+              className={`inline-block mt-0.5 px-2.5 py-0.5 rounded-full text-[9px] tracking-[0.2em] uppercase border ${
+                esAdmin
+                  ? "border-[#d4af6a]/60 bg-[#d4af6a]/15 text-[#e6c687]"
+                  : "border-emerald-400/40 bg-emerald-500/10 text-emerald-300"
+              }`}
+            >
+              {esAdmin ? "ROL: ADMINISTRADOR" : "ROL: AUDITOR"}
+            </span>
           </div>
 
           <button
-            onClick={handleCerrarSesion}
-            className="px-3.5 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-xs font-medium text-slate-300 transition cursor-pointer"
+            onClick={cerrarSesion}
+            className="rounded-full border border-slate-400/30 px-5 py-2 text-[10px] tracking-[0.22em] uppercase text-slate-300 hover:border-[#d4af6a] hover:text-[#d4af6a] transition-colors"
           >
-            Cerrar sesión
+            SALIR
           </button>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
-        {/* Alertas globales */}
-        {error && (
-          <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
-            {error}
-          </div>
-        )}
-        {mensajeExito && (
-          <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm">
-            {mensajeExito}
-          </div>
-        )}
-
-        {/* Tarjetas KPI */}
-        {resumen && (
-          <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-              <p className="text-xs text-slate-400 uppercase tracking-wider">Activos Auditados</p>
-              <p className="text-3xl font-bold text-white mt-2">
-                {resumen.total_activos_auditados}
-              </p>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-              <p className="text-xs text-slate-400 uppercase tracking-wider">Cumplimiento Prom.</p>
-              <p className="text-3xl font-bold text-emerald-400 mt-2">
-                {resumen.cumplimiento_promedio}%
-              </p>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-              <p className="text-xs text-slate-400 uppercase tracking-wider">Brecha Promedio</p>
-              <p className="text-3xl font-bold text-amber-400 mt-2">
-                {resumen.brecha_promedio}%
-              </p>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-              <p className="text-xs text-slate-400 uppercase tracking-wider">Riesgos Detectados</p>
-              <p className="text-3xl font-bold text-rose-400 mt-2">
-                {resumen.total_riesgos_detectados}
-              </p>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-              <p className="text-xs text-slate-400 uppercase tracking-wider">Sugerencias IA</p>
-              <p className="text-3xl font-bold text-sky-400 mt-2">
-                {resumen.sugerencias_pendientes}
-              </p>
-            </div>
-          </section>
-        )}
-
-        {/* Navegación de Módulos */}
-        <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
-          <button
-            onClick={() => setTabActiva("activos")}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer ${
-              tabActiva === "activos"
-                ? "bg-emerald-600 text-white"
-                : "bg-slate-900 text-slate-400 hover:text-white"
-            }`}
-          >
-            Activos y Gap Analysis ({activos.length})
-          </button>
-
-          <button
-            onClick={() => setTabActiva("nueva")}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer ${
-              tabActiva === "nueva"
-                ? "bg-emerald-600 text-white"
-                : "bg-slate-900 text-slate-400 hover:text-white"
-            }`}
-          >
-            + Nueva Auditoría PDF
-          </button>
-
-          <button
-            onClick={() => setTabActiva("historial")}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer ${
-              tabActiva === "historial"
-                ? "bg-emerald-600 text-white"
-                : "bg-slate-900 text-slate-400 hover:text-white"
-            }`}
-          >
-            Bitácora SHA-256 ({historial.length})
-          </button>
+      {errorGlobal && (
+        <div className="mx-6 md:mx-10 mt-6 rounded-xl border border-red-400/30 bg-red-950/40 px-5 py-3 text-xs text-red-200">
+          {errorGlobal}
         </div>
+      )}
 
-        {/* TAB 1: LISTA DE ACTIVOS AUDITADOS */}
-        {tabActiva === "activos" && (
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
-            <div className="p-5 border-b border-slate-800">
-              <h2 className="font-semibold text-base text-white">
-                Catálogo de Activos Evaluados (ISO/IEC 27001:2022)
-              </h2>
+      {/* =====================================================================
+          VISTA 1: ADMINISTRADOR (Dueño de la app - Gestión total de usuarios)
+         ===================================================================== */}
+      {esAdmin ? (
+        <main className="flex-1 max-w-7xl w-full mx-auto px-6 md:px-10 py-8 space-y-8">
+          {/* KPIs Globales del Administrador */}
+          <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="border border-slate-400/15 bg-[#1b273d]/80 p-5">
+              <p className="text-[10px] tracking-[0.22em] uppercase text-slate-400">Usuarios Registrados</p>
+              <p className="mt-2 text-3xl font-light text-[#d4af6a]">{usuarios.length}</p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                {usuarios.filter((u) => u.id_rol === 1).length} Admin · {usuarios.filter((u) => u.id_rol === 2).length} Auditores
+              </p>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-950/60 text-slate-400 text-xs uppercase">
-                  <tr>
-                    <th className="px-5 py-3.5">Activo / Documento</th>
-                    <th className="px-5 py-3.5">Área</th>
-                    <th className="px-5 py-3.5">Valoración CID</th>
-                    <th className="px-5 py-3.5">Cumplimiento</th>
-                    <th className="px-5 py-3.5">Brecha</th>
-                    <th className="px-5 py-3.5 text-right">Acciones</th>
+            <div className="border border-slate-400/15 bg-[#1b273d]/80 p-5">
+              <p className="text-[10px] tracking-[0.22em] uppercase text-slate-400">Activos Auditados</p>
+              <p className="mt-2 text-3xl font-light text-slate-100">{resumen?.total_activos_auditados ?? 0}</p>
+              <p className="mt-1 text-[11px] text-slate-400">Documentos evaluados</p>
+            </div>
+
+            <div className="border border-slate-400/15 bg-[#1b273d]/80 p-5">
+              <p className="text-[10px] tracking-[0.22em] uppercase text-slate-400">Cumplimiento Global</p>
+              <p className="mt-2 text-3xl font-light text-emerald-400">
+                {resumen?.cumplimiento_promedio?.toFixed(1) ?? 0}%
+              </p>
+              <p className="mt-1 text-[11px] text-slate-400">Promedio ISO 27001</p>
+            </div>
+
+            <div className="border border-slate-400/15 bg-[#1b273d]/80 p-5">
+              <p className="text-[10px] tracking-[0.22em] uppercase text-slate-400">Registros Bitácora</p>
+              <p className="mt-2 text-3xl font-light text-slate-100">{historial.length}</p>
+              <p className="mt-1 text-[11px] text-slate-400">Trazabilidad SHA-256</p>
+            </div>
+          </section>
+
+          {/* Navegación interna de Administrador */}
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-400/15 pb-4">
+            <div className="flex gap-3">
+              <button
+                onClick={() => setTabAdmin("usuarios")}
+                className={`rounded-full px-5 py-2 text-[11px] tracking-[0.2em] uppercase transition-all ${
+                  tabAdmin === "usuarios"
+                    ? "border border-[#d4af6a] bg-[#d4af6a]/15 text-[#e6c687]"
+                    : "border border-slate-400/20 text-slate-400 hover:text-white"
+                }`}
+              >
+                Gestión de Usuarios
+              </button>
+              <button
+                onClick={() => setTabAdmin("auditoria")}
+                className={`rounded-full px-5 py-2 text-[11px] tracking-[0.2em] uppercase transition-all ${
+                  tabAdmin === "auditoria"
+                    ? "border border-[#d4af6a] bg-[#d4af6a]/15 text-[#e6c687]"
+                    : "border border-slate-400/20 text-slate-400 hover:text-white"
+                }`}
+              >
+                Supervisión Auditorías
+              </button>
+              <button
+                onClick={() => setTabAdmin("bitacora")}
+                className={`rounded-full px-5 py-2 text-[11px] tracking-[0.2em] uppercase transition-all ${
+                  tabAdmin === "bitacora"
+                    ? "border border-[#d4af6a] bg-[#d4af6a]/15 text-[#e6c687]"
+                    : "border border-slate-400/20 text-slate-400 hover:text-white"
+                }`}
+              >
+                Bitácora SHA-256
+              </button>
+            </div>
+
+            {tabAdmin === "usuarios" && (
+              <button
+                onClick={abrirCrearUsuario}
+                className="rounded-full border border-[#d4af6a] bg-[#d4af6a] px-6 py-2 text-[11px] font-semibold tracking-[0.2em] uppercase text-[#121a2a] hover:bg-[#e6c687] transition-colors"
+              >
+                + Nuevo Usuario
+              </button>
+            )}
+          </div>
+
+          {/* TAB 1 ADMIN: CRUD DE USUARIOS */}
+          {tabAdmin === "usuarios" && (
+            <section className="border border-slate-400/15 bg-[#1b273d]/80 overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-400/15 text-[10px] tracking-[0.22em] uppercase text-slate-400 bg-[#162033]">
+                    <th className="py-4 px-6">ID</th>
+                    <th className="py-4 px-6">Nombre Completo</th>
+                    <th className="py-4 px-6">RUT</th>
+                    <th className="py-4 px-6">Correo Corporativo</th>
+                    <th className="py-4 px-6">Rol</th>
+                    <th className="py-4 px-6">Estado</th>
+                    <th className="py-4 px-6 text-right">Acciones</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800">
-                  {activos.map((act) => (
-                    <tr key={act.id_activo} className="hover:bg-slate-800/40">
-                      <td className="px-5 py-4 font-medium text-white">{act.nombre}</td>
-                      <td className="px-5 py-4 text-slate-300">{act.area_organizativa}</td>
-                      <td className="px-5 py-4">
-                        <span className="inline-flex gap-1.5 text-xs font-mono bg-slate-950 px-2.5 py-1 rounded border border-slate-700">
-                          C:{act.nivel_confidencialidad} · I:{act.nivel_integridad} · D:
-                          {act.nivel_disponibilidad}
-                        </span>
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-2">
-                          <div className="w-24 h-2 bg-slate-800 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-emerald-500"
-                              style={{ width: `${act.porcentaje_cumplimiento}%` }}
-                            />
-                          </div>
-                          <span className="text-emerald-400 font-semibold">
-                            {act.porcentaje_cumplimiento}%
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 text-amber-400 font-semibold">
-                        {act.porcentaje_brecha}%
-                      </td>
-                      <td className="px-5 py-4 text-right">
-                        <button
-                          onClick={() => handleVerDetalle(act.id_activo)}
-                          className="px-3 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-medium transition cursor-pointer"
+                <tbody className="divide-y divide-slate-400/10 text-sm">
+                  {usuarios.map((u) => (
+                    <tr key={u.id_usuario} className="hover:bg-slate-800/30 transition-colors">
+                      <td className="py-4 px-6 text-slate-400">#{u.id_usuario}</td>
+                      <td className="py-4 px-6 font-medium text-slate-100">{u.nombre_completo}</td>
+                      <td className="py-4 px-6 text-slate-300 font-mono text-xs">{u.rut}</td>
+                      <td className="py-4 px-6 text-slate-300">{u.correo}</td>
+                      <td className="py-4 px-6">
+                        <span
+                          className={`px-3 py-1 rounded-full text-[10px] tracking-[0.18em] uppercase border ${
+                            u.id_rol === 1
+                              ? "border-[#d4af6a]/50 bg-[#d4af6a]/10 text-[#e6c687]"
+                              : "border-sky-400/40 bg-sky-500/10 text-sky-300"
+                          }`}
                         >
-                          {cargandoDetalle ? "Cargando..." : "Ver Brechas y Sugerencias"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {activos.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-5 py-8 text-center text-slate-500">
-                        Aún no hay activos auditados. Sube tu primer PDF en &quot;+ Nueva Auditoría PDF&quot;.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {/* TAB 2: FORMULARIO NUEVA AUDITORÍA PDF */}
-        {tabActiva === "nueva" && (
-          <section className="max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl p-6">
-            <h2 className="text-lg font-semibold text-white mb-1">
-              Ejecutar Nueva Auditoría Documental (93 Controles ISO 27001:2022)
-            </h2>
-            <p className="text-xs text-slate-400 mb-6">
-              El motor evaluará el contenido técnico del PDF, calculará el nivel de brecha y registrará la evidencia con firma SHA-256.
-            </p>
-
-            <form onSubmit={handleSubirPdf} className="space-y-5">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">
-                  Documento de Evidencia / Política (PDF)
-                </label>
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  required
-                  onChange={(e) => setArchivoPdf(e.target.files?.[0] || null)}
-                  className="w-full text-sm text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-emerald-600 file:text-white hover:file:bg-emerald-500 bg-slate-950 border border-slate-700 rounded-lg p-2"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">
-                  Área Organizativa / Asset Owner
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={areaOrganizativa}
-                  onChange={(e) => setAreaOrganizativa(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-sm focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1">
-                    Confidencialidad (1-5)
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={5}
-                    value={confidencialidad}
-                    onChange={(e) => setConfidencialidad(Number(e.target.value))}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1">
-                    Integridad (1-5)
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={5}
-                    value={integridad}
-                    onChange={(e) => setIntegridad(Number(e.target.value))}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1">
-                    Disponibilidad (1-5)
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={5}
-                    value={disponibilidad}
-                    onChange={(e) => setDisponibilidad(Number(e.target.value))}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white text-sm"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={analizandoPdf}
-                className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium text-sm transition cursor-pointer"
-              >
-                {analizandoPdf ? "Analizando controles ISO 27001..." : "Iniciar Análisis ISO 27001"}
-              </button>
-            </form>
-          </section>
-        )}
-
-        {/* TAB 3: BITÁCORA DE AUDITORÍA SHA-256 */}
-        {tabActiva === "historial" && (
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
-            <div className="p-5 border-b border-slate-800">
-              <h2 className="font-semibold text-base text-white">
-                Registro Inmutable de Auditoría Criptográfica (ISO 27001 A.8.15)
-              </h2>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-950/60 text-slate-400 text-xs uppercase">
-                  <tr>
-                    <th className="px-5 py-3.5">ID</th>
-                    <th className="px-5 py-3.5">Tabla / Registro</th>
-                    <th className="px-5 py-3.5">Acción</th>
-                    <th className="px-5 py-3.5">Firma SHA-256</th>
-                    <th className="px-5 py-3.5">Fecha</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800">
-                  {historial.map((log) => (
-                    <tr key={log.id_log} className="hover:bg-slate-800/40">
-                      <td className="px-5 py-3.5 font-mono text-xs text-slate-400">
-                        #{log.id_log}
-                      </td>
-                      <td className="px-5 py-3.5 text-slate-200">
-                        {log.tabla_afectada} (ID {log.registro_id})
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <span className="px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                          {log.accion}
+                          {u.id_rol === 1 ? "Administrador" : "Auditor"}
                         </span>
                       </td>
-                      <td className="px-5 py-3.5 font-mono text-xs text-sky-400 break-all max-w-xs">
-                        {log.hash_mod}
+                      <td className="py-4 px-6">
+                        <span
+                          className={`inline-flex items-center gap-1.5 text-xs ${
+                            u.activo ? "text-emerald-400" : "text-red-400"
+                          }`}
+                        >
+                          <span
+                            className={`h-1.5 w-1.5 rounded-full ${
+                              u.activo ? "bg-emerald-400" : "bg-red-400"
+                            }`}
+                          />
+                          {u.activo ? "Activo" : "Inactivo"}
+                        </span>
                       </td>
-                      <td className="px-5 py-3.5 text-xs text-slate-400">
-                        {new Date(log.fecha_modificacion).toLocaleString()}
+                      <td className="py-4 px-6 text-right space-x-3">
+                        <button
+                          onClick={() => abrirEditarUsuario(u)}
+                          className="text-xs tracking-wider uppercase text-[#d4af6a] hover:underline"
+                        >
+                          Editar
+                        </button>
+                        {u.id_usuario !== usuario?.id_usuario && (
+                          <button
+                            onClick={() => handleEliminarUsuario(u)}
+                            className="text-xs tracking-wider uppercase text-red-400 hover:underline"
+                          >
+                            Eliminar
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
-          </section>
-        )}
+            </section>
+          )}
 
-        {/* PANEL DETALLE DE BRECHAS Y SUGERENCIAS */}
-        {detalleSeleccionado && (
-          <section className="bg-slate-900 border border-slate-700 rounded-2xl p-6 space-y-6">
-            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-800 pb-4">
-              <div>
-                <span className="text-xs uppercase tracking-wider text-sky-400 font-semibold">
-                  Informe Técnico de Brechas
-                </span>
-                <h3 className="text-xl font-bold text-white mt-1">
-                  {detalleSeleccionado.activo.nombre}
-                </h3>
-                <p className="text-xs text-slate-400 mt-1">
-                  Área: {detalleSeleccionado.activo.area_organizativa} · CID (
-                  {detalleSeleccionado.activo.valoracion_cid.confidencialidad}/
-                  {detalleSeleccionado.activo.valoracion_cid.integridad}/
-                  {detalleSeleccionado.activo.valoracion_cid.disponibilidad})
-                </p>
-              </div>
-
-              <button
-                onClick={() => setDetalleSeleccionado(null)}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 cursor-pointer"
-              >
-                Cerrar detalle
-              </button>
-            </div>
-
-            {/* Riesgos asociados */}
-            <div>
-              <h4 className="text-sm font-semibold text-rose-400 mb-3">
-                Riesgos Identificados ({detalleSeleccionado.riesgos.length})
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {detalleSeleccionado.riesgos.map((r) => (
-                  <div
-                    key={r.id_riesgo}
-                    className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/30 text-sm"
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-xs font-bold uppercase text-rose-400">
-                        Nivel {r.nivel_riesgo}
-                      </span>
-                      <span className="text-xs text-slate-400">
-                        Impacto: {r.impacto} · Prob.: {r.probabilidad}
-                      </span>
+          {/* TAB 2 ADMIN: SUPERVISIÓN AUDITORÍAS */}
+          {tabAdmin === "auditoria" && (
+            <section className="border border-slate-400/15 bg-[#1b273d]/80 p-6 space-y-4">
+              <h2 className="text-xs tracking-[0.25em] uppercase text-[#d4af6a]">
+                Documentos Auditados en la Plataforma
+              </h2>
+              {activos.length === 0 ? (
+                <p className="text-sm text-slate-400">No hay auditorías registradas aún.</p>
+              ) : (
+                <div className="divide-y divide-slate-400/10">
+                  {activos.map((a) => (
+                    <div key={a.id_activo} className="py-4 flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <p className="font-medium text-slate-100">{a.nombre}</p>
+                        <p className="text-xs text-slate-400">
+                          Área: {a.area_organizativa} · Norma: {a.norma}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-6 text-xs">
+                        <span className="text-emerald-400">Cumplimiento: {a.porcentaje_cumplimiento}%</span>
+                        <span className="text-amber-300">Brecha: {a.porcentaje_brecha}%</span>
+                      </div>
                     </div>
-                    <p className="text-slate-200">{r.descripcion}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Sugerencias de remediación */}
-            <div>
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <h4 className="text-sm font-semibold text-emerald-400">
-                  Plan de Remediación ISO 27001 ({sugerenciasFiltradas.length} controles)
-                </h4>
-
-                <div className="flex gap-1.5">
-                  {["Todas", "Alta", "Media", "Baja"].map((nivel) => (
-                    <button
-                      key={nivel}
-                      onClick={() => setFiltroCriticidad(nivel)}
-                      className={`px-3 py-1 rounded-md text-xs font-medium cursor-pointer ${
-                        filtroCriticidad === nivel
-                          ? "bg-sky-600 text-white"
-                          : "bg-slate-800 text-slate-400 hover:text-white"
-                      }`}
-                    >
-                      {nivel}
-                    </button>
                   ))}
                 </div>
-              </div>
+              )}
+            </section>
+          )}
 
-              <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
-                {sugerenciasFiltradas.map((sug) => (
+          {/* TAB 3 ADMIN: BITÁCORA SHA-256 */}
+          {tabAdmin === "bitacora" && (
+            <section className="border border-slate-400/15 bg-[#1b273d]/80 p-6 space-y-4">
+              <h2 className="text-xs tracking-[0.25em] uppercase text-[#d4af6a]">
+                Logs Criptográficos Inmutables (Control A.8.15)
+              </h2>
+              <div className="space-y-3">
+                {historial.map((h) => (
                   <div
-                    key={sug.id_sugerencia}
-                    className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    key={h.id_log}
+                    className="border border-slate-400/10 bg-[#121a2a]/60 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
                   >
-                    <p className="text-sm text-slate-200">{sug.recomendacion}</p>
-                    <span
-                      className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-semibold ${
-                        sug.nivel_criticidad === "Alta"
-                          ? "bg-rose-500/15 text-rose-400 border border-rose-500/30"
-                          : sug.nivel_criticidad === "Media"
-                          ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                          : "bg-slate-700/40 text-slate-300"
-                      }`}
-                    >
-                      Criticidad {sug.nivel_criticidad}
+                    <div>
+                      <span className="text-[#d4af6a] font-semibold uppercase">{h.accion}</span>{" "}
+                      <span className="text-slate-300">en tabla {h.tabla_afectada} (ID #{h.registro_id})</span>
+                      <p className="text-[11px] text-slate-500 mt-1 font-mono break-all">
+                        SHA-256: {h.hash_mod}
+                      </p>
+                    </div>
+                    <span className="text-slate-400 text-[11px]">
+                      {new Date(h.fecha_modificacion).toLocaleString()}
                     </span>
                   </div>
                 ))}
               </div>
+            </section>
+          )}
+
+          {/* MODAL CREAR / EDITAR USUARIO */}
+          {modalUsuario && (
+            <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="w-full max-w-md border border-slate-400/20 bg-[#1b273d] p-7 shadow-2xl">
+                <h3 className="text-sm tracking-[0.25em] uppercase text-[#d4af6a]">
+                  {editandoUsuario ? "Modificar Usuario" : "Registrar Nuevo Usuario"}
+                </h3>
+                <form onSubmit={guardarUsuario} className="mt-6 space-y-4 text-sm">
+                  <div>
+                    <label className="block text-[10px] tracking-[0.2em] uppercase text-slate-400 mb-1.5">
+                      Nombre Completo
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formUser.nombre_completo}
+                      onChange={(e) => setFormUser({ ...formUser, nombre_completo: e.target.value })}
+                      className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2.5 text-slate-100 focus:border-[#d4af6a] focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] tracking-[0.2em] uppercase text-slate-400 mb-1.5">
+                      RUT
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="12.345.678-9"
+                      value={formUser.rut}
+                      onChange={(e) => setFormUser({ ...formUser, rut: e.target.value })}
+                      className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2.5 text-slate-100 focus:border-[#d4af6a] focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] tracking-[0.2em] uppercase text-slate-400 mb-1.5">
+                      Correo Corporativo
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={formUser.correo}
+                      onChange={(e) => setFormUser({ ...formUser, correo: e.target.value })}
+                      className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2.5 text-slate-100 focus:border-[#d4af6a] focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] tracking-[0.2em] uppercase text-slate-400 mb-1.5">
+                      {editandoUsuario ? "Nueva Contraseña (opcional)" : "Contraseña"}
+                    </label>
+                    <input
+                      type="password"
+                      required={!editandoUsuario}
+                      value={formUser.password}
+                      onChange={(e) => setFormUser({ ...formUser, password: e.target.value })}
+                      placeholder={editandoUsuario ? "Dejar vacío para mantener" : "••••••••"}
+                      className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2.5 text-slate-100 focus:border-[#d4af6a] focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] tracking-[0.2em] uppercase text-slate-400 mb-1.5">
+                        Rol en Sistema
+                      </label>
+                      <select
+                        value={formUser.id_rol}
+                        onChange={(e) => setFormUser({ ...formUser, id_rol: Number(e.target.value) })}
+                        className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2.5 text-slate-100 focus:border-[#d4af6a] focus:outline-none"
+                      >
+                        <option value={1}>Administrador</option>
+                        <option value={2}>Auditor</option>
+                      </select>
+                    </div>
+
+                    {editandoUsuario && (
+                      <div>
+                        <label className="block text-[10px] tracking-[0.2em] uppercase text-slate-400 mb-1.5">
+                          Estado Cuenta
+                        </label>
+                        <select
+                          value={formUser.activo ? "true" : "false"}
+                          onChange={(e) =>
+                            setFormUser({ ...formUser, activo: e.target.value === "true" })
+                          }
+                          className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2.5 text-slate-100 focus:border-[#d4af6a] focus:outline-none"
+                        >
+                          <option value="true">Activo</option>
+                          <option value="false">Inactivo</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-4 flex justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setModalUsuario(false)}
+                      className="rounded-full border border-slate-400/30 px-5 py-2 text-[10px] tracking-[0.2em] uppercase text-slate-300"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={guardandoUser}
+                      className="rounded-full border border-[#d4af6a] bg-[#d4af6a] px-6 py-2 text-[10px] font-semibold tracking-[0.2em] uppercase text-[#121a2a]"
+                    >
+                      {guardandoUser ? "Guardando..." : "Guardar"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </main>
+      ) : (
+        /* =====================================================================
+            VISTA 2: AUDITOR (Solo subida de PDFs y revisión de sugerencias IA)
+           ===================================================================== */
+        <main className="flex-1 max-w-7xl w-full mx-auto px-6 md:px-10 py-8 space-y-8">
+          {/* KPIs Operativos del Auditor */}
+          <section className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+            <div className="border border-slate-400/15 bg-[#1b273d]/80 p-5">
+              <p className="text-[10px] tracking-[0.22em] uppercase text-slate-400">Mis Documentos Auditados</p>
+              <p className="mt-2 text-3xl font-light text-[#d4af6a]">{resumen?.total_activos_auditados ?? 0}</p>
+            </div>
+            <div className="border border-slate-400/15 bg-[#1b273d]/80 p-5">
+              <p className="text-[10px] tracking-[0.22em] uppercase text-slate-400">Cumplimiento Promedio</p>
+              <p className="mt-2 text-3xl font-light text-emerald-400">
+                {resumen?.cumplimiento_promedio?.toFixed(1) ?? 0}%
+              </p>
+            </div>
+            <div className="border border-slate-400/15 bg-[#1b273d]/80 p-5">
+              <p className="text-[10px] tracking-[0.22em] uppercase text-slate-400">Sugerencias IA Pendientes</p>
+              <p className="mt-2 text-3xl font-light text-amber-300">{resumen?.sugerencias_pendientes ?? 0}</p>
             </div>
           </section>
-        )}
-      </main>
+
+          {/* Selector de Pestañas del Auditor */}
+          <div className="flex gap-3 border-b border-slate-400/15 pb-4">
+            <button
+              onClick={() => setTabAuditor("subir")}
+              className={`rounded-full px-6 py-2 text-[11px] tracking-[0.2em] uppercase transition-all ${
+                tabAuditor === "subir"
+                  ? "border border-[#d4af6a] bg-[#d4af6a]/15 text-[#e6c687]"
+                  : "border border-slate-400/20 text-slate-400 hover:text-white"
+              }`}
+            >
+              1. Subir Documento PDF
+            </button>
+            <button
+              onClick={() => setTabAuditor("resultados")}
+              className={`rounded-full px-6 py-2 text-[11px] tracking-[0.2em] uppercase transition-all ${
+                tabAuditor === "resultados"
+                  ? "border border-[#d4af6a] bg-[#d4af6a]/15 text-[#e6c687]"
+                  : "border border-slate-400/20 text-slate-400 hover:text-white"
+              }`}
+            >
+              2. Revisar Sugerencias y Brechas ({activos.length})
+            </button>
+          </div>
+
+          {/* TAB AUDITOR 1: CARGA DE PDF */}
+          {tabAuditor === "subir" && (
+            <section className="max-w-2xl mx-auto border border-slate-400/15 bg-[#1b273d]/80 p-8">
+              <h2 className="text-sm tracking-[0.28em] uppercase text-[#d4af6a]">
+                Análisis de Brechas ISO/IEC 27001:2022
+              </h2>
+              <p className="mt-2 text-xs text-slate-400">
+                Carga una política, procedimiento o evidencia técnica en PDF para evaluar su cumplimiento normativo.
+              </p>
+
+              <form onSubmit={handleSubirPdf} className="mt-6 space-y-5 text-sm">
+                <div>
+                  <label className="block text-[10px] tracking-[0.22em] uppercase text-slate-300 mb-2">
+                    Archivo PDF de Evidencia
+                  </label>
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    required
+                    onChange={(e) => setArchivoPdf(e.target.files?.[0] || null)}
+                    className="w-full rounded-xl border border-dashed border-[#d4af6a]/40 bg-[#121a2a] p-4 text-xs text-slate-300 file:mr-4 file:rounded-full file:border-0 file:bg-[#d4af6a] file:px-4 file:py-1.5 file:text-xs file:font-semibold file:text-[#121a2a]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] tracking-[0.22em] uppercase text-slate-300 mb-2">
+                    Área Organizativa
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={areaOrganizativa}
+                    onChange={(e) => setAreaOrganizativa(e.target.value)}
+                    className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-5 py-2.5 text-slate-100 focus:border-[#d4af6a] focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-1.5">
+                      Confidencialidad (1-5)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={5}
+                      value={cid.c}
+                      onChange={(e) => setCid({ ...cid, c: Number(e.target.value) })}
+                      className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2 text-center text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-1.5">
+                      Integridad (1-5)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={5}
+                      value={cid.i}
+                      onChange={(e) => setCid({ ...cid, i: Number(e.target.value) })}
+                      className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2 text-center text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] tracking-[0.18em] uppercase text-slate-400 mb-1.5">
+                      Disponibilidad (1-5)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={5}
+                      value={cid.d}
+                      onChange={(e) => setCid({ ...cid, d: Number(e.target.value) })}
+                      className="w-full rounded-full border border-slate-400/25 bg-[#121a2a] px-4 py-2 text-center text-slate-100"
+                    />
+                  </div>
+                </div>
+
+                {mensajeAuditor && (
+                  <div className="rounded-xl border border-[#d4af6a]/40 bg-[#d4af6a]/10 p-3 text-xs text-[#e6c687] text-center">
+                    {mensajeAuditor}
+                  </div>
+                )}
+
+                <div className="pt-2 flex justify-center">
+                  <button
+                    type="submit"
+                    disabled={analizandoPdf || !archivoPdf}
+                    className="rounded-full border border-[#d4af6a] bg-[#d4af6a] px-10 py-3 text-xs font-semibold tracking-[0.25em] uppercase text-[#121a2a] hover:bg-[#e6c687] disabled:opacity-50 transition-all"
+                  >
+                    {analizandoPdf ? "ANALIZANDO CON IA..." : "EJECUTAR AUDITORÍA PDF"}
+                  </button>
+                </div>
+              </form>
+            </section>
+          )}
+
+          {/* TAB AUDITOR 2: REVISIÓN DE SUGERENCIAS IA Y BRECHAS */}
+          {tabAuditor === "resultados" && (
+            <section className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Lista de documentos auditados */}
+              <div className="border border-slate-400/15 bg-[#1b273d]/80 p-5 space-y-3">
+                <h3 className="text-[10px] tracking-[0.24em] uppercase text-[#d4af6a]">
+                  Documentos Evaluados
+                </h3>
+                {activos.length === 0 ? (
+                  <p className="text-xs text-slate-400">Aún no has subido documentos PDF.</p>
+                ) : (
+                  activos.map((a) => (
+                    <button
+                      key={a.id_activo}
+                      onClick={() => seleccionarActivo(a.id_activo)}
+                      className={`w-full text-left p-4 border transition-all ${
+                        detalleActivo?.activo.id_activo === a.id_activo
+                          ? "border-[#d4af6a] bg-[#d4af6a]/10"
+                          : "border-slate-400/15 bg-[#121a2a]/60 hover:border-slate-400/40"
+                      }`}
+                    >
+                      <p className="text-sm font-medium text-slate-100 truncate">{a.nombre}</p>
+                      <p className="text-[11px] text-slate-400 mt-1">{a.area_organizativa}</p>
+                      <div className="mt-2 flex justify-between text-[11px]">
+                        <span className="text-emerald-400">Cumple: {a.porcentaje_cumplimiento}%</span>
+                        <span className="text-amber-300">Brecha: {a.porcentaje_brecha}%</span>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+
+              {/* Panel de Sugerencias de Remediación IA */}
+              <div className="lg:col-span-2 border border-slate-400/15 bg-[#1b273d]/80 p-6 space-y-6">
+                {!detalleActivo ? (
+                  <p className="text-sm text-slate-400">
+                    Selecciona un documento auditado para revisar las sugerencias de remediación.
+                  </p>
+                ) : (
+                  <>
+                    <div className="border-b border-slate-400/15 pb-4">
+                      <span className="text-[10px] tracking-[0.22em] uppercase text-[#d4af6a]">
+                        INFORME TÉCNICO DE REMEDIACIÓN
+                      </span>
+                      <h3 className="text-xl font-light text-slate-100 mt-1">
+                        {detalleActivo.activo.nombre}
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Área: {detalleActivo.activo.area_organizativa} · Valoración CID:{" "}
+                        {detalleActivo.activo.valoracion_cid.confidencialidad}/
+                        {detalleActivo.activo.valoracion_cid.integridad}/
+                        {detalleActivo.activo.valoracion_cid.disponibilidad}
+                      </p>
+                    </div>
+
+                    <div className="space-y-4">
+                      <h4 className="text-xs tracking-[0.22em] uppercase text-slate-300">
+                        Sugerencias Generadas por IA ({detalleActivo.sugerencias_remediacion.length})
+                      </h4>
+                      {detalleActivo.sugerencias_remediacion.length === 0 ? (
+                        <p className="text-xs text-slate-400">No se registraron brechas críticas en este documento.</p>
+                      ) : (
+                        detalleActivo.sugerencias_remediacion.map((sug) => (
+                          <div
+                            key={sug.id_sugerencia}
+                            className="border border-slate-400/15 bg-[#121a2a]/80 p-4 space-y-2"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] tracking-[0.18em] uppercase border border-amber-400/40 bg-amber-500/10 text-amber-300">
+                                Criticidad: {sug.nivel_criticidad}
+                              </span>
+                              {sug.score_confianza !== null && (
+                                <span className="text-[11px] text-slate-400">
+                                  Confianza IA: {(sug.score_confianza * 100).toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm text-slate-200 leading-relaxed">{sug.recomendacion}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            </section>
+          )}
+        </main>
+      )}
     </div>
   );
 }

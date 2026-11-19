@@ -159,3 +159,57 @@ export async function analizarPdfAuditoria(params: {
     body: formData,
   });
 }
+export interface UsuarioSistema {
+  id_usuario: number;
+  id_rol: number;
+  nombre_completo: string;
+  rut: string;
+  correo: string;
+  es_2fa_activo: boolean;
+  activo: boolean;
+  fecha_creacion: string;
+}
+
+export const getUsuarioActual = () =>
+  fetchAuth<UsuarioSistema>("/usuarios/me");
+
+export const getUsuarios = () =>
+  fetchAuth<UsuarioSistema[]>("/usuarios/");
+
+export const crearUsuario = (payload: {
+  id_rol: number;
+  nombre_completo: string;
+  rut: string;
+  correo: string;
+  password: string;
+  es_2fa_activo?: boolean;
+  activo?: boolean;
+}) =>
+  fetchAuth<UsuarioSistema>("/usuarios/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const actualizarUsuario = (
+  id_usuario: number,
+  payload: Partial<{
+    id_rol: number;
+    nombre_completo: string;
+    rut: string;
+    correo: string;
+    password: string;
+    es_2fa_activo: boolean;
+    activo: boolean;
+  }>
+) =>
+  fetchAuth<UsuarioSistema>(`/usuarios/${id_usuario}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const eliminarUsuario = (id_usuario: number) =>
+  fetchAuth<{ message: string }>(`/usuarios/${id_usuario}`, {
+    method: "DELETE",
+  });
