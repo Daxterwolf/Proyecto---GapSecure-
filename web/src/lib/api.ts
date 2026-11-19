@@ -6,12 +6,20 @@ export interface ResumenDashboard {
   brecha_promedio: number;
   total_riesgos_detectados: number;
   sugerencias_pendientes: number;
+  cumplimiento_por_departamento?: {
+    area: string;
+    documentos_evaluados: number;
+    porcentaje_cumplimiento: number;
+    porcentaje_brecha: number;
+  }[];
 }
 
 export interface ActivoItem {
   id_activo: number;
   nombre: string;
   area_organizativa: string;
+  areas_involucradas?: string[];
+  area_principal?: string;
   nivel_confidencialidad: number;
   nivel_integridad: number;
   nivel_disponibilidad: number;
@@ -51,6 +59,7 @@ export interface DetalleActivo {
     id_sugerencia: number;
     recomendacion: string;
     nivel_criticidad: string;
+    areas_involucradas?: string | null;
     score_confianza: number | null;
     fecha_generacion: string;
   }[];
@@ -66,6 +75,24 @@ export interface RegistroHistorial {
   valor_nuevo: Record<string, unknown> | null;
   hash_mod: string;
   fecha_modificacion: string;
+}
+
+export interface AreaOrganizativa {
+  id_area: number;
+  nombre: string;
+  descripcion: string | null;
+  activa: boolean;
+}
+
+export interface UsuarioSistema {
+  id_usuario: number;
+  id_rol: number;
+  nombre_completo: string;
+  rut: string;
+  correo: string;
+  es_2fa_activo: boolean;
+  activo: boolean;
+  fecha_creacion: string;
 }
 
 export function getToken(): string | null {
@@ -128,6 +155,9 @@ export async function loginUsuario(correo: string, password: string) {
   return data;
 }
 
+// ==========================================
+// DASHBOARD & AUDITORÍA PDF
+// ==========================================
 export const getDashboardResumen = () =>
   fetchAuth<ResumenDashboard>("/dashboard/resumen");
 
@@ -143,13 +173,18 @@ export const getDashboardHistorial = () =>
 export async function analizarPdfAuditoria(params: {
   archivo: File;
   area_organizativa: string;
+  areas_seleccionadas?: string[];
   nivel_confidencialidad: number;
   nivel_integridad: number;
   nivel_disponibilidad: number;
 }) {
   const formData = new FormData();
-  formData.append("archivo", params.archivo);
+  formData.append("file", params.archivo);
   formData.append("area_organizativa", params.area_organizativa);
+  formData.append(
+    "areas_seleccionadas",
+    JSON.stringify(params.areas_seleccionadas || [params.area_organizativa])
+  );
   formData.append("nivel_confidencialidad", String(params.nivel_confidencialidad));
   formData.append("nivel_integridad", String(params.nivel_integridad));
   formData.append("nivel_disponibilidad", String(params.nivel_disponibilidad));
@@ -159,17 +194,42 @@ export async function analizarPdfAuditoria(params: {
     body: formData,
   });
 }
-export interface UsuarioSistema {
-  id_usuario: number;
-  id_rol: number;
-  nombre_completo: string;
-  rut: string;
-  correo: string;
-  es_2fa_activo: boolean;
-  activo: boolean;
-  fecha_creacion: string;
-}
 
+// ==========================================
+// ÁREAS ORGANIZATIVAS
+// ==========================================
+export const getAreasOrganizativas = (soloActivas = false) =>
+  fetchAuth<AreaOrganizativa[]>(`/areas/?solo_activas=${soloActivas}`);
+
+export const crearAreaOrganizativa = (payload: {
+  nombre: string;
+  descripcion?: string;
+  activa?: boolean;
+}) =>
+  fetchAuth<AreaOrganizativa>("/areas/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const actualizarAreaOrganizativa = (
+  id_area: number,
+  payload: Partial<{ nombre: string; descripcion: string; activa: boolean }>
+) =>
+  fetchAuth<AreaOrganizativa>(`/areas/${id_area}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const eliminarAreaOrganizativa = (id_area: number) =>
+  fetchAuth<{ message: string }>(`/areas/${id_area}`, {
+    method: "DELETE",
+  });
+
+// ==========================================
+// USUARIOS
+// ==========================================
 export const getUsuarioActual = () =>
   fetchAuth<UsuarioSistema>("/usuarios/me");
 

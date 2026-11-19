@@ -32,6 +32,17 @@ class Usuario(Base):
     rol = relationship("Rol", back_populates="usuarios")
     activos_propietario = relationship("Activo", back_populates="propietario")
 
+# 2B. Catálogo de Áreas Organizativas (15 iniciales + configurables por Admin)
+class AreaOrganizativa(Base):
+    __tablename__ = "area_organizativa"
+
+    id_area = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String(120), unique=True, nullable=False)
+    descripcion = Column(Text)
+    activa = Column(Boolean, default=True)
+
+    activos_asociados = relationship("ActivoArea", back_populates="area", cascade="all, delete-orphan")
+
 # 3. Categoría de Activo
 class CategoriaActivo(Base):
     __tablename__ = "categoria_activo"
@@ -55,7 +66,7 @@ class Activo(Base):
     id_categoria = Column(Integer, ForeignKey("categoria_activo.id_categoria"), nullable=False)
     id_propietario = Column(Integer, ForeignKey("usuario.id_usuario"), nullable=False)
     nombre = Column(String(150), nullable=False)
-    area_organizativa = Column(String(100), nullable=False)
+    area_organizativa = Column(String(255), nullable=False)
     descripcion = Column(Text)
     nivel_confidencialidad = Column(Integer)
     nivel_integridad = Column(Integer)
@@ -64,10 +75,22 @@ class Activo(Base):
 
     categoria = relationship("CategoriaActivo", back_populates="activos")
     propietario = relationship("Usuario", back_populates="activos_propietario")
+    areas = relationship("ActivoArea", back_populates="activo", cascade="all, delete-orphan")
     riesgos = relationship("Riesgo", back_populates="activo", cascade="all, delete-orphan")
     politicas = relationship("ActivoPolitica", back_populates="activo", cascade="all, delete-orphan")
     sugerencias = relationship("SugerenciaIA", back_populates="activo", cascade="all, delete-orphan")
     servicios = relationship("ActivoServicio", back_populates="activo", cascade="all, delete-orphan")
+
+# 4B. Relación M:N Activo <-> Área Organizativa (Responsable Principal vs Colaboradora)
+class ActivoArea(Base):
+    __tablename__ = "activo_area"
+
+    id_activo = Column(Integer, ForeignKey("activo.id_activo", ondelete="CASCADE"), primary_key=True)
+    id_area = Column(Integer, ForeignKey("area_organizativa.id_area", ondelete="CASCADE"), primary_key=True)
+    es_responsable_principal = Column(Boolean, default=False)
+
+    activo = relationship("Activo", back_populates="areas")
+    area = relationship("AreaOrganizativa", back_populates="activos_asociados")
 
 # 5. Política
 class Politica(Base):
@@ -83,7 +106,7 @@ class Politica(Base):
     activos = relationship("ActivoPolitica", back_populates="politica", cascade="all, delete-orphan")
     sugerencias = relationship("SugerenciaIA", back_populates="politica", cascade="all, delete-orphan")
 
-# 6. Cláusula
+# 6. Cláusula (con categoría oficial Anexo A y área sugerida)
 class Clausula(Base):
     __tablename__ = "clausula"
 
@@ -92,6 +115,8 @@ class Clausula(Base):
     codigo_clausula = Column(String(50), nullable=False)
     titulo = Column(String(200), nullable=False)
     descripcion = Column(Text)
+    categoria_anexo = Column(String(80), default="A.5 Controles organizacionales")
+    area_sugerida = Column(String(120), default="Seguridad de la Información")
 
     politica = relationship("Politica", back_populates="clausulas")
 
@@ -118,6 +143,7 @@ class SugerenciaIA(Base):
     recomendacion = Column(Text, nullable=False)
     nivel_criticidad = Column(String(20))
     score_confianza = Column(DECIMAL(5, 2))
+    areas_involucradas = Column(String(255))
     fecha_generacion = Column(DateTime(timezone=True), server_default=func.now())
 
     activo = relationship("Activo", back_populates="sugerencias")

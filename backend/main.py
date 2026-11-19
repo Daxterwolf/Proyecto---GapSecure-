@@ -1,3 +1,4 @@
+import json
 import models
 import schemas
 import crud
@@ -56,6 +57,52 @@ def read_roles(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
 
 
 # ==========================================
+# ENDPOINTS PARA ÁREAS ORGANIZATIVAS
+# ==========================================
+@app.get("/areas/", response_model=list[schemas.AreaOrganizativaResponse], tags=["Áreas Organizativas"])
+def read_areas(
+    solo_activas: bool = False,
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
+):
+    return crud.get_areas_organizativas(db, solo_activas=solo_activas)
+
+
+@app.post("/areas/", response_model=schemas.AreaOrganizativaResponse, tags=["Áreas Organizativas"])
+def create_area(
+    area: schemas.AreaOrganizativaCreate,
+    db: Session = Depends(get_db),
+    admin_actual: models.Usuario = Depends(requerir_admin),
+):
+    return crud.create_area_organizativa(db=db, area=area)
+
+
+@app.put("/areas/{id_area}", response_model=schemas.AreaOrganizativaResponse, tags=["Áreas Organizativas"])
+def update_area(
+    id_area: int,
+    datos: schemas.AreaOrganizativaUpdate,
+    db: Session = Depends(get_db),
+    admin_actual: models.Usuario = Depends(requerir_admin),
+):
+    actualizada = crud.update_area_organizativa(db=db, id_area=id_area, datos=datos)
+    if not actualizada:
+        raise HTTPException(status_code=404, detail="Área organizativa no encontrada")
+    return actualizada
+
+
+@app.delete("/areas/{id_area}", tags=["Áreas Organizativas"])
+def delete_area(
+    id_area: int,
+    db: Session = Depends(get_db),
+    admin_actual: models.Usuario = Depends(requerir_admin),
+):
+    eliminada = crud.delete_area_organizativa(db=db, id_area=id_area)
+    if not eliminada:
+        raise HTTPException(status_code=404, detail="Área organizativa no encontrada")
+    return {"message": "Área eliminada correctamente"}
+
+
+# ==========================================
 # ENDPOINTS PARA USUARIOS (SOLO ADMINISTRADOR)
 # ==========================================
 @app.post("/usuarios/", response_model=schemas.UsuarioResponse, tags=["Usuarios"])
@@ -64,7 +111,6 @@ def create_usuario(
     db: Session = Depends(get_db),
     admin_actual: models.Usuario = Depends(requerir_admin),
 ):
-    # Verificar si el correo ya existe por seguridad
     db_usuario = crud.get_usuario_by_correo(db, correo=usuario.correo)
     if db_usuario:
         raise HTTPException(
@@ -74,7 +120,6 @@ def create_usuario(
     return crud.create_usuario(db=db, usuario=usuario)
 
 
-# Proteger la consulta de usuarios: solo administradores pueden ver la lista
 @app.get("/usuarios/", response_model=list[schemas.UsuarioResponse], tags=["Usuarios"])
 def read_usuarios(
     skip: int = 0,
@@ -85,7 +130,6 @@ def read_usuarios(
     return crud.get_usuarios(db, skip=skip, limit=limit)
 
 
-# Endpoint para verificar el perfil del usuario autenticado (Admin o Auditor)
 @app.get("/usuarios/me", response_model=schemas.UsuarioResponse, tags=["Usuarios"])
 def read_usuario_me(usuario_actual: models.Usuario = Depends(obtener_usuario_actual)):
     return usuario_actual
@@ -128,10 +172,8 @@ def login_para_obtener_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    # form_data.username recibe el correo ingresado
     usuario = crud.get_usuario_by_correo(db, correo=form_data.username)
 
-    # 1. Validar usuario y verificar el hash con Bcrypt
     if not usuario or not security.verificar_password(
         form_data.password, usuario.password_hash
     ):
@@ -141,13 +183,11 @@ def login_para_obtener_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 2. Validar estado de la cuenta
     if not usuario.activo:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Usuario inactivo"
         )
 
-    # 3. Generar JWT firmado
     access_token = security.crear_access_token(
         data={"sub": usuario.correo, "id_rol": usuario.id_rol}
     )
@@ -161,7 +201,8 @@ def login_para_obtener_access_token(
 @app.post("/auditoria/analizar-pdf/", tags=["Auditoría ISO 27001"])
 async def analizar_documento_pdf(
     file: UploadFile = File(...),
-    area_organizativa: str = Form("Tecnologías de la Información"),
+    area_organizativa: str = Form("Tecnologías de la Información (TI)"),
+    areas_seleccionadas: str = Form("[]"),
     nivel_confidencialidad: int = Form(4, ge=1, le=5),
     nivel_integridad: int = Form(4, ge=1, le=5),
     nivel_disponibilidad: int = Form(3, ge=1, le=5),
@@ -173,6 +214,16 @@ async def analizar_documento_pdf(
             status_code=400, detail="El archivo debe estar en formato PDF."
         )
 
+    try:
+        lista_areas = json.loads(areas_seleccionadas) if areas_seleccionadas else []
+        if not isinstance(lista_areas, list):
+            lista_areas = []
+    except Exception:
+        lista_areas = [a.strip() for a in areas_seleccionadas.split(",") if a.strip()]
+
+    if not lista_areas and area_organizativa:
+        lista_areas = [area_organizativa]
+
     contenido = await file.read()
     try:
         return pdf_analyzer.analizar_pdf_iso27001(
@@ -180,7 +231,8 @@ async def analizar_documento_pdf(
             id_usuario=usuario_actual.id_usuario,
             nombre_archivo=file.filename,
             contenido_bytes=contenido,
-            area_organizativa=area_organizativa,
+            areas_seleccionadas=lista_areas,
+            area_principal=area_organizativa,
             confidencialidad=nivel_confidencialidad,
             integridad=nivel_integridad,
             disponibilidad=nivel_disponibilidad,
@@ -197,7 +249,11 @@ def get_dashboard_resumen(
     db: Session = Depends(get_db),
     usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
 ):
-    return crud.obtener_resumen_dashboard(db=db, id_usuario=usuario_actual.id_usuario)
+    return crud.obtener_resumen_dashboard(
+        db=db,
+        id_usuario=usuario_actual.id_usuario,
+        es_admin=(usuario_actual.id_rol == 1),
+    )
 
 
 @app.get("/dashboard/activos", tags=["Dashboard"])
@@ -205,7 +261,11 @@ def get_dashboard_activos(
     db: Session = Depends(get_db),
     usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
 ):
-    return crud.listar_activos_usuario(db=db, id_usuario=usuario_actual.id_usuario)
+    return crud.listar_activos_usuario(
+        db=db,
+        id_usuario=usuario_actual.id_usuario,
+        es_admin=(usuario_actual.id_rol == 1),
+    )
 
 
 @app.get("/dashboard/activos/{id_activo}/detalle", tags=["Dashboard"])
@@ -218,6 +278,7 @@ def get_dashboard_activo_detalle(
         db=db,
         id_activo=id_activo,
         id_usuario=usuario_actual.id_usuario,
+        es_admin=(usuario_actual.id_rol == 1),
     )
     if not detalle:
         raise HTTPException(
@@ -237,4 +298,5 @@ def get_dashboard_historial(
         db=db,
         id_usuario=usuario_actual.id_usuario,
         limit=limit,
+        es_admin=(usuario_actual.id_rol == 1),
     )

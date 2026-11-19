@@ -56,3 +56,23 @@ class UsuarioUpdate(BaseModel):
     es_2fa_activo: Optional[bool] = None
     activo: Optional[bool] = None
     password: Optional[str] = None
+# ==========================================
+# ESQUEMAS PARA ÁREAS ORGANIZATIVAS
+# ==========================================
+class AreaOrganizativaBase(BaseModel):
+    nombre: str
+    descripcion: Optional[str] = None
+    activa: bool = True
+
+class AreaOrganizativaCreate(AreaOrganizativaBase):
+    pass
+
+class AreaOrganizativaUpdate(BaseModel):
+    nombre: Optional[str] = None
+    descripcion: Optional[str] = None
+    activa: Optional[bool] = None
+
+class AreaOrganizativaResponse(AreaOrganizativaBase):
+    id_area: int
+
+    model_config = ConfigDict(from_attributes=True)
