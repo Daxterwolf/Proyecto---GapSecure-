@@ -145,6 +145,8 @@ class SugerenciaIA(Base):
     score_confianza = Column(DECIMAL(5, 2))
     areas_involucradas = Column(String(255))
     fecha_generacion = Column(DateTime(timezone=True), server_default=func.now())
+    resuelta = Column(Boolean, default=False, nullable=False)
+    fecha_resolucion = Column(DateTime, nullable=True)
 
     activo = relationship("Activo", back_populates="sugerencias")
     politica = relationship("Politica", back_populates="sugerencias")

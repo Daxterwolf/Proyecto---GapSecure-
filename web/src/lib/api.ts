@@ -62,6 +62,8 @@ export interface DetalleActivo {
     areas_involucradas?: string | null;
     score_confianza: number | null;
     fecha_generacion: string;
+    resuelta?: boolean;
+    fecha_resolucion?: string | null;
   }[];
 }
 
@@ -194,6 +196,18 @@ export async function analizarPdfAuditoria(params: {
     body: formData,
   });
 }
+
+export const toggleSugerenciaResuelta = (idSugerencia: number) =>
+  fetchAuth<{
+    id_sugerencia: number;
+    id_activo: number;
+    resuelta: boolean;
+    fecha_resolucion: string | null;
+    pendientes_restantes: number;
+    porcentaje_cumplimiento: number;
+  }>(`/sugerencias/${idSugerencia}/toggle-resuelta`, {
+    method: "PATCH",
+  });
 
 // ==========================================
 // ÁREAS ORGANIZATIVAS

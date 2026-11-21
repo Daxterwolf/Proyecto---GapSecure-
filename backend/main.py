@@ -242,6 +242,25 @@ async def analizar_documento_pdf(
 
 
 # ==========================================
+# GESTIÓN DE ESTADO DE REMEDIACIÓN
+# ==========================================
+@app.patch("/sugerencias/{id_sugerencia}/toggle-resuelta", tags=["Auditoría ISO 27001"])
+def cambiar_estado_sugerencia(
+    id_sugerencia: int,
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
+):
+    resultado = crud.toggle_sugerencia_resuelta(
+        db=db,
+        id_sugerencia=id_sugerencia,
+        id_usuario=usuario_actual.id_usuario,
+    )
+    if not resultado:
+        raise HTTPException(status_code=404, detail="Sugerencia no encontrada")
+    return resultado
+
+
+# ==========================================
 # ENDPOINTS PARA EL DASHBOARD
 # ==========================================
 @app.get("/dashboard/resumen", tags=["Dashboard"])

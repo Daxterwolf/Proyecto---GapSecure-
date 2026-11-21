@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+import json
+import hashlib
 from sqlalchemy.orm import Session
 import models
 import schemas
@@ -116,6 +119,99 @@ def delete_usuario(db: Session, id_usuario: int):
     return True
 
 # ==========================================
+# FUNCIÓN AUXILIAR: RECÁLCULO CON REMEDIACIONES
+# ==========================================
+def _calcular_cumplimiento_actualizado(
+    metricas_log: dict,
+    sugerencias_activo: list[models.SugerenciaIA],
+    fallback_cumple: bool = False
+) -> float:
+    base_pct = float(metricas_log.get("porcentaje_cumplimiento", 100.0 if fallback_cumple else 0.0))
+    total_sug = len(sugerencias_activo)
+    if total_sug == 0:
+        return base_pct
+
+    resueltas = sum(1 for s in sugerencias_activo if getattr(s, "resuelta", False))
+    if resueltas == 0:
+        return round(base_pct, 2)
+
+    brecha_inicial = max(0.0, 100.0 - base_pct)
+    puntos_recuperados = brecha_inicial * (resueltas / total_sug)
+    return round(min(100.0, base_pct + puntos_recuperados), 2)
+
+# ==========================================
+# GESTIÓN DE ESTADO DE REMEDIACIÓN
+# ==========================================
+def toggle_sugerencia_resuelta(db: Session, id_sugerencia: int, id_usuario: int):
+    sug = db.query(models.SugerenciaIA).filter(
+        models.SugerenciaIA.id_sugerencia == id_sugerencia
+    ).first()
+    if not sug:
+        return None
+
+    estado_anterior = bool(sug.resuelta)
+    sug.resuelta = not estado_anterior
+    sug.fecha_resolucion = datetime.now(timezone.utc) if sug.resuelta else None
+    db.flush()
+
+    todas_sug = db.query(models.SugerenciaIA).filter(
+        models.SugerenciaIA.id_activo == sug.id_activo
+    ).all()
+    pendientes_activo = sum(1 for s in todas_sug if not s.resuelta)
+
+    log_base = db.query(models.HistorialAuditoria).filter(
+        models.HistorialAuditoria.tabla_afectada == "activo_politica",
+        models.HistorialAuditoria.registro_id == sug.id_activo
+    ).order_by(models.HistorialAuditoria.id_log.asc()).first()
+
+    metricas_base = log_base.valor_nuevo if (log_base and log_base.valor_nuevo) else {}
+    nuevo_pct = _calcular_cumplimiento_actualizado(metricas_base, todas_sug)
+
+    eval_pol = db.query(models.ActivoPolitica).filter(
+        models.ActivoPolitica.id_activo == sug.id_activo
+    ).first()
+    if eval_pol:
+        eval_pol.cumplimiento = (pendientes_activo == 0 or nuevo_pct >= 80.0)
+
+    # Registrar traza inmutable SHA-256
+    payload_log = {
+        "id_sugerencia": sug.id_sugerencia,
+        "id_activo": sug.id_activo,
+        "resuelta_anterior": estado_anterior,
+        "resuelta_nueva": sug.resuelta,
+        "pendientes_restantes": pendientes_activo,
+        "porcentaje_cumplimiento_actualizado": nuevo_pct,
+    }
+    hash_str = hashlib.sha256(
+        json.dumps(payload_log, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+    db.add(models.HistorialAuditoria(
+        id_usuario=id_usuario,
+        tabla_afectada="sugerencia_ia",
+        registro_id=sug.id_sugerencia,
+        accion="UPDATE",
+        valor_anterior={"resuelta": estado_anterior},
+        valor_nuevo={
+            "resuelta": sug.resuelta,
+            "pendientes_restantes": pendientes_activo,
+            "porcentaje_cumplimiento": nuevo_pct
+        },
+        hash_mod=hash_str
+    ))
+
+    db.commit()
+    db.refresh(sug)
+    return {
+        "id_sugerencia": sug.id_sugerencia,
+        "id_activo": sug.id_activo,
+        "resuelta": sug.resuelta,
+        "fecha_resolucion": sug.fecha_resolucion,
+        "pendientes_restantes": pendientes_activo,
+        "porcentaje_cumplimiento": nuevo_pct
+    }
+
+# ==========================================
 # CONSULTAS PARA EL DASHBOARD DE AUDITORÍA
 # ==========================================
 def obtener_resumen_dashboard(db: Session, id_usuario: int, es_admin: bool = False):
@@ -140,20 +236,26 @@ def obtener_resumen_dashboard(db: Session, id_usuario: int, es_admin: bool = Fal
         models.HistorialAuditoria.registro_id.in_(ids_activos)
     ).all()
 
-    porcentajes = [
-        float(log.valor_nuevo["porcentaje_cumplimiento"])
-        for log in logs
-        if log.valor_nuevo and "porcentaje_cumplimiento" in log.valor_nuevo
-    ]
-    cumplimiento_prom = round(sum(porcentajes) / len(porcentajes), 2) if porcentajes else 0.0
+    todas_sugerencias = db.query(models.SugerenciaIA).filter(
+        models.SugerenciaIA.id_activo.in_(ids_activos)
+    ).all()
 
-    # Consolidado proporcional por área (solo sobre controles asignados a cada departamento)
+    sug_por_activo: dict[int, list[models.SugerenciaIA]] = {}
+    for s in todas_sugerencias:
+        sug_por_activo.setdefault(s.id_activo, []).append(s)
+
+    porcentajes = []
     acumulado_areas: dict[str, dict] = {}
+
     for activo in activos:
         log_act = next((l for l in logs if l.registro_id == activo.id_activo), None)
-        pct_act = float(log_act.valor_nuevo.get("porcentaje_cumplimiento", 0.0)) if (log_act and log_act.valor_nuevo) else 0.0
+        metricas_log = log_act.valor_nuevo if (log_act and log_act.valor_nuevo) else {}
+        pct_act = _calcular_cumplimiento_actualizado(
+            metricas_log,
+            sug_por_activo.get(activo.id_activo, [])
+        )
+        porcentajes.append(pct_act)
 
-        # Si el activo tiene áreas relacionales en activo_area, usamos esas; si no, usamos el texto
         nombres_areas = [rel.area.nombre for rel in activo.areas if rel.area]
         if not nombres_areas and activo.area_organizativa:
             nombres_areas = [a.strip() for a in activo.area_organizativa.split(",") if a.strip()]
@@ -163,6 +265,8 @@ def obtener_resumen_dashboard(db: Session, id_usuario: int, es_admin: bool = Fal
                 acumulado_areas[nom_area] = {"suma_pct": 0.0, "evaluaciones": 0}
             acumulado_areas[nom_area]["suma_pct"] += pct_act
             acumulado_areas[nom_area]["evaluaciones"] += 1
+
+    cumplimiento_prom = round(sum(porcentajes) / len(porcentajes), 2) if porcentajes else 0.0
 
     ranking_departamentos = [
         {
@@ -181,9 +285,7 @@ def obtener_resumen_dashboard(db: Session, id_usuario: int, es_admin: bool = Fal
         models.Riesgo.id_activo.in_(ids_activos)
     ).count()
 
-    sugerencias_pendientes = db.query(models.SugerenciaIA).filter(
-        models.SugerenciaIA.id_activo.in_(ids_activos)
-    ).count()
+    sugerencias_pendientes = sum(1 for s in todas_sugerencias if not s.resuelta)
 
     return {
         "total_activos_auditados": len(activos),
@@ -213,10 +315,21 @@ def listar_activos_usuario(db: Session, id_usuario: int, es_admin: bool = False)
     ).all() if ids_activos else []
     metricas_por_activo = {log.registro_id: (log.valor_nuevo or {}) for log in logs}
 
+    todas_sug = db.query(models.SugerenciaIA).filter(
+        models.SugerenciaIA.id_activo.in_(ids_activos)
+    ).all() if ids_activos else []
+    sug_por_activo: dict[int, list[models.SugerenciaIA]] = {}
+    for s in todas_sug:
+        sug_por_activo.setdefault(s.id_activo, []).append(s)
+
     lista = []
     for activo, eval_pol, politica in resultados:
         metricas = metricas_por_activo.get(activo.id_activo, {})
-        cumplimiento = float(metricas.get("porcentaje_cumplimiento", 100.0 if (eval_pol and eval_pol.cumplimiento) else 0.0))
+        cumplimiento = _calcular_cumplimiento_actualizado(
+            metricas,
+            sug_por_activo.get(activo.id_activo, []),
+            fallback_cumple=bool(eval_pol and eval_pol.cumplimiento)
+        )
         lista.append({
             "id_activo": activo.id_activo,
             "nombre": activo.nombre,
@@ -257,7 +370,7 @@ def obtener_detalle_activo(db: Session, id_activo: int, id_usuario: int, es_admi
 
     sugerencias = db.query(models.SugerenciaIA).filter(
         models.SugerenciaIA.id_activo == id_activo
-    ).order_by(models.SugerenciaIA.id_sugerencia.asc()).all()
+    ).order_by(models.SugerenciaIA.resuelta.asc(), models.SugerenciaIA.id_sugerencia.asc()).all()
 
     riesgos = db.query(models.Riesgo).filter(
         models.Riesgo.id_activo == id_activo
@@ -298,7 +411,9 @@ def obtener_detalle_activo(db: Session, id_activo: int, id_usuario: int, es_admi
                 "nivel_criticidad": s.nivel_criticidad,
                 "areas_involucradas": s.areas_involucradas,
                 "score_confianza": float(s.score_confianza) if s.score_confianza is not None else None,
-                "fecha_generacion": s.fecha_generacion
+                "fecha_generacion": s.fecha_generacion,
+                "resuelta": bool(s.resuelta),
+                "fecha_resolucion": s.fecha_resolucion
             }
             for s in sugerencias
         ]
