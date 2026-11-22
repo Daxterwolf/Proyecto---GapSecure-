@@ -2,13 +2,19 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { loginUsuario } from "@/lib/api";
+import { loginUsuario, verificarCodigo2FALogin } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("auditor.prueba@gapsecure.com");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+
+  // Estado para el segundo paso (TOTP 6 dígitos)
+  const [step2FA, setStep2FA] = useState(false);
+  const [tempToken, setTempToken] = useState<string | null>(null);
+  const [code2FA, setCode2FA] = useState("");
+
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -18,8 +24,14 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await loginUsuario(email, password);
-      router.push("/");
+      const res = await loginUsuario(email, password);
+      if (res.requires_2fa && res.temp_token) {
+        setTempToken(res.temp_token);
+        setStep2FA(true);
+        setCode2FA("");
+      } else {
+        router.push("/");
+      }
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);
@@ -31,9 +43,36 @@ export default function LoginPage() {
     }
   };
 
+  const handleVerify2FA = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tempToken) return;
+    setError(null);
+    setLoading(true);
+
+    try {
+      await verificarCodigo2FALogin(tempToken, code2FA);
+      router.push("/");
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Código 2FA inválido");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVolverCredenciales = () => {
+    setStep2FA(false);
+    setTempToken(null);
+    setCode2FA("");
+    setError(null);
+  };
+
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-[#0c1829] text-slate-100 flex flex-col items-center justify-between py-10 px-4 select-none">
-      {/* Imagen de edificios corporativos con mayor luminosidad y nitidez */}
+      {/* Imagen de edificios corporativos */}
       <div
         className="pointer-events-none absolute inset-0 z-0 bg-cover bg-center bg-no-repeat scale-105"
         style={{
@@ -42,7 +81,7 @@ export default function LoginPage() {
         }}
       />
 
-      {/* Viñeta sutil en bordes para integrar sin apagar los edificios */}
+      {/* Viñeta sutil */}
       <div
         className="pointer-events-none absolute inset-0 z-0"
         style={{
@@ -75,81 +114,141 @@ export default function LoginPage() {
         </div>
       </header>
 
-      {/* Tarjeta principal tipo cristal translúcido con esquinas suavemente redondeadas */}
+      {/* Tarjeta principal */}
       <main className="relative z-10 w-full max-w-2xl rounded-2xl shadow-[0_28px_70px_rgba(4,10,22,0.65)] border border-white/20 bg-[#152238]/42 backdrop-blur-md overflow-hidden">
-        {/* Contenido central */}
         <div className="relative z-10 flex flex-col items-center px-6 py-14 md:py-16">
           <h1 className="text-3xl sm:text-4xl md:text-5xl font-light tracking-[0.42em] text-[#e2be78] uppercase text-center pl-[0.42em] drop-shadow-sm">
             GAPSECURE
           </h1>
           <p className="mt-3 text-[11px] sm:text-xs tracking-[0.28em] uppercase text-slate-100/85 text-center">
-            AUDITORÍA AUTOMATIZADA · ISO/IEC 27001:2022
+            {step2FA
+              ? "VERIFICACIÓN EN DOS PASOS · CONTROL A.8.5"
+              : "AUDITORÍA AUTOMATIZADA · ISO/IEC 27001:2022"}
           </p>
 
-          <form
-            onSubmit={handleLogin}
-            className="mt-10 w-full max-w-sm space-y-5"
-          >
-            <div>
-              <label className="block text-[10px] tracking-[0.24em] uppercase text-slate-200/90 mb-2">
-                Correo Corporativo
-              </label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="auditor@empresa.com"
-                className="w-full rounded-full border border-white/20 bg-[#0d1829]/65 px-5 py-3 text-sm text-slate-100 placeholder-slate-400 focus:border-[#d4af6a] focus:bg-[#0d1829]/85 focus:outline-none transition-all"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[10px] tracking-[0.24em] uppercase text-slate-200/90 mb-2">
-                Contraseña
-              </label>
-              <div className="relative">
+          {!step2FA ? (
+            <form
+              onSubmit={handleLogin}
+              className="mt-10 w-full max-w-sm space-y-5"
+            >
+              <div>
+                <label className="block text-[10px] tracking-[0.24em] uppercase text-slate-200/90 mb-2">
+                  Correo Corporativo
+                </label>
                 <input
-                  type={showPassword ? "text" : "password"}
+                  type="email"
                   required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••••••"
-                  className="w-full rounded-full border border-white/20 bg-[#0d1829]/65 px-5 py-3 pr-14 text-sm text-slate-100 placeholder-slate-400 focus:border-[#d4af6a] focus:bg-[#0d1829]/85 focus:outline-none transition-all"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="auditor@empresa.com"
+                  className="w-full rounded-full border border-white/20 bg-[#0d1829]/65 px-5 py-3 text-sm text-slate-100 placeholder-slate-400 focus:border-[#d4af6a] focus:bg-[#0d1829]/85 focus:outline-none transition-all"
                 />
+              </div>
+
+              <div>
+                <label className="block text-[10px] tracking-[0.24em] uppercase text-slate-200/90 mb-2">
+                  Contraseña
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••••••"
+                    className="w-full rounded-full border border-white/20 bg-[#0d1829]/65 px-5 py-3 pr-14 text-sm text-slate-100 placeholder-slate-400 focus:border-[#d4af6a] focus:bg-[#0d1829]/85 focus:outline-none transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] tracking-wider uppercase text-slate-300 hover:text-[#d4af6a] transition-colors"
+                  >
+                    {showPassword ? "Ocultar" : "Ver"}
+                  </button>
+                </div>
+              </div>
+
+              {error && (
+                <div className="rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-2.5 text-center text-xs text-red-200">
+                  {error}
+                </div>
+              )}
+
+              <div className="pt-3 flex justify-center">
                 <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] tracking-wider uppercase text-slate-300 hover:text-[#d4af6a] transition-colors"
+                  type="submit"
+                  disabled={loading}
+                  className="rounded-full border border-[#d4af6a] bg-[#d4af6a]/20 px-12 py-3 text-xs font-medium tracking-[0.28em] uppercase text-[#f0d394] hover:bg-[#d4af6a] hover:text-[#121a2a] disabled:opacity-50 transition-all duration-300 shadow-[0_0_25px_rgba(212,175,106,0.25)]"
                 >
-                  {showPassword ? "Ocultar" : "Ver"}
+                  {loading ? "VERIFICANDO..." : "INGRESAR"}
                 </button>
               </div>
-            </div>
-
-            {error && (
-              <div className="rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-2.5 text-center text-xs text-red-200">
-                {error}
+            </form>
+          ) : (
+            <form
+              onSubmit={handleVerify2FA}
+              className="mt-10 w-full max-w-sm space-y-5"
+            >
+              <div className="rounded-2xl border border-[#d4af6a]/30 bg-[#0d1829]/60 p-4 text-center">
+                <p className="text-xs text-slate-200">
+                  Ingresa el código de 6 dígitos generado por tu aplicación
+                  autenticadora para{" "}
+                  <span className="font-semibold text-[#f0d394]">{email}</span>.
+                </p>
               </div>
-            )}
 
-            <div className="pt-3 flex justify-center">
-              <button
-                type="submit"
-                disabled={loading}
-                className="rounded-full border border-[#d4af6a] bg-[#d4af6a]/20 px-12 py-3 text-xs font-medium tracking-[0.28em] uppercase text-[#f0d394] hover:bg-[#d4af6a] hover:text-[#121a2a] disabled:opacity-50 transition-all duration-300 shadow-[0_0_25px_rgba(212,175,106,0.25)]"
-              >
-                {loading ? "VERIFICANDO..." : "INGRESAR"}
-              </button>
-            </div>
-          </form>
+              <div>
+                <label className="block text-center text-[10px] tracking-[0.24em] uppercase text-slate-200/90 mb-2">
+                  Código de Verificación (TOTP)
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  required
+                  autoFocus
+                  value={code2FA}
+                  onChange={(e) =>
+                    setCode2FA(e.target.value.replace(/\D/g, "").slice(0, 6))
+                  }
+                  placeholder="000000"
+                  className="w-full rounded-full border border-[#d4af6a]/50 bg-[#0d1829]/75 px-5 py-3.5 text-center font-mono text-2xl tracking-[0.5em] text-[#f0d394] placeholder-slate-500 focus:border-[#d4af6a] focus:outline-none transition-all"
+                />
+              </div>
+
+              {error && (
+                <div className="rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-2.5 text-center text-xs text-red-200">
+                  {error}
+                </div>
+              )}
+
+              <div className="pt-2 flex flex-col items-center gap-3">
+                <button
+                  type="submit"
+                  disabled={loading || code2FA.length !== 6}
+                  className="w-full rounded-full border border-[#d4af6a] bg-[#d4af6a]/20 px-10 py-3 text-xs font-medium tracking-[0.28em] uppercase text-[#f0d394] hover:bg-[#d4af6a] hover:text-[#121a2a] disabled:opacity-50 transition-all duration-300 shadow-[0_0_25px_rgba(212,175,106,0.25)]"
+                >
+                  {loading ? "VALIDANDO CÓDIGO..." : "CONFIRMAR ACCESO"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleVolverCredenciales}
+                  className="text-[11px] tracking-[0.18em] uppercase text-slate-300 hover:text-[#f0d394] transition-colors"
+                >
+                  ← Volver a credenciales
+                </button>
+              </div>
+            </form>
+          )}
         </div>
 
         {/* Pie interno de la tarjeta */}
         <div className="relative z-10 flex items-center justify-between border-t border-white/15 px-8 py-4 text-[10px] tracking-[0.2em] uppercase text-slate-200/85">
           <div className="flex items-center gap-3">
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span>SHA-256 ACTIVO</span>
+            <span>SHA-256 · MFA TOTP</span>
           </div>
 
           <div className="hidden sm:block">

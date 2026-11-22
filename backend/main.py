@@ -165,7 +165,7 @@ def delete_usuario_endpoint(
 
 
 # ==========================================
-# ENDPOINTS PARA AUTENTICACIÓN
+# ENDPOINTS PARA AUTENTICACIÓN Y 2FA (A.8.5)
 # ==========================================
 @app.post("/login", response_model=schemas.Token, tags=["Autenticación"])
 def login_para_obtener_access_token(
@@ -188,11 +188,111 @@ def login_para_obtener_access_token(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Usuario inactivo"
         )
 
+    # Si el usuario tiene 2FA activo y configurado, exigir segundo factor
+    if usuario.es_2fa_activo and usuario.secret_2fa:
+        temp_token = security.crear_temp_2fa_token(usuario.correo)
+        return {
+            "access_token": "",
+            "token_type": "bearer",
+            "requires_2fa": True,
+            "temp_token": temp_token,
+        }
+
     access_token = security.crear_access_token(
         data={"sub": usuario.correo, "id_rol": usuario.id_rol}
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "requires_2fa": False,
+        "temp_token": None,
+    }
+
+
+@app.post("/login/2fa", response_model=schemas.Token, tags=["Autenticación"])
+def verificar_login_2fa(
+    payload: schemas.Verify2FALoginRequest,
+    db: Session = Depends(get_db),
+):
+    correo = security.verificar_temp_2fa_token(payload.temp_token)
+    usuario = crud.get_usuario_by_correo(db, correo=correo)
+
+    if not usuario or not usuario.activo or not usuario.es_2fa_activo or not usuario.secret_2fa:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Configuración 2FA no válida para este usuario.",
+        )
+
+    if not security.verificar_codigo_totp(usuario.secret_2fa, payload.code):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Código de verificación 2FA incorrecto o expirado.",
+        )
+
+    access_token = security.crear_access_token(
+        data={"sub": usuario.correo, "id_rol": usuario.id_rol}
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "requires_2fa": False,
+        "temp_token": None,
+    }
+
+
+@app.post("/2fa/setup", response_model=schemas.Setup2FAResponse, tags=["Autenticación"])
+def iniciar_configuracion_2fa(
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
+):
+    secret = security.generar_secreto_totp()
+    usuario_actual.secret_2fa = secret
+    db.commit()
+    db.refresh(usuario_actual)
+
+    otpauth_url, qr_base64 = security.generar_qr_totp_base64(usuario_actual.correo, secret)
+    return {
+        "secret": secret,
+        "otpauth_url": otpauth_url,
+        "qr_base64": qr_base64,
+    }
+
+
+@app.post("/2fa/confirm", response_model=schemas.UsuarioResponse, tags=["Autenticación"])
+def confirmar_activacion_2fa(
+    payload: schemas.Confirm2FARequest,
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
+):
+    if not usuario_actual.secret_2fa:
+        raise HTTPException(
+            status_code=400,
+            detail="Primero debes generar el código QR de vinculación.",
+        )
+
+    if not security.verificar_codigo_totp(usuario_actual.secret_2fa, payload.code):
+        raise HTTPException(
+            status_code=400,
+            detail="El código de 6 dígitos no coincide. Verifica la hora de tu teléfono e inténtalo nuevamente.",
+        )
+
+    usuario_actual.es_2fa_activo = True
+    db.commit()
+    db.refresh(usuario_actual)
+    return usuario_actual
+
+
+@app.post("/2fa/disable", response_model=schemas.UsuarioResponse, tags=["Autenticación"])
+def desactivar_2fa(
+    db: Session = Depends(get_db),
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual),
+):
+    usuario_actual.es_2fa_activo = False
+    usuario_actual.secret_2fa = None
+    db.commit()
+    db.refresh(usuario_actual)
+    return usuario_actual
 
 
 # ==========================================

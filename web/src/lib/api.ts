@@ -97,6 +97,13 @@ export interface UsuarioSistema {
   fecha_creacion: string;
 }
 
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  requires_2fa?: boolean;
+  temp_token?: string | null;
+}
+
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("gapsecure_token");
@@ -136,7 +143,10 @@ async function fetchAuth<T>(endpoint: string, options: RequestInit = {}): Promis
   return response.json();
 }
 
-export async function loginUsuario(correo: string, password: string) {
+// ==========================================
+// AUTENTICACIÓN Y 2FA (TOTP)
+// ==========================================
+export async function loginUsuario(correo: string, password: string): Promise<LoginResponse> {
   const formData = new URLSearchParams();
   formData.append("username", correo);
   formData.append("password", password);
@@ -152,10 +162,51 @@ export async function loginUsuario(correo: string, password: string) {
     throw new Error(err.detail || "Correo o contraseña incorrectos");
   }
 
-  const data = await response.json();
-  setToken(data.access_token);
+  const data: LoginResponse = await response.json();
+  if (!data.requires_2fa && data.access_token) {
+    setToken(data.access_token);
+  }
   return data;
 }
+
+export async function verificarCodigo2FALogin(
+  tempToken: string,
+  code: string
+): Promise<LoginResponse> {
+  const response = await fetch(`${API_URL}/login/2fa`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ temp_token: tempToken, code }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || "Código de verificación 2FA incorrecto");
+  }
+
+  const data: LoginResponse = await response.json();
+  if (data.access_token) {
+    setToken(data.access_token);
+  }
+  return data;
+}
+
+export const setup2FA = () =>
+  fetchAuth<{ secret: string; otpauth_url: string; qr_base64: string }>("/2fa/setup", {
+    method: "POST",
+  });
+
+export const confirmar2FA = (code: string) =>
+  fetchAuth<UsuarioSistema>("/2fa/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+
+export const desactivar2FA = () =>
+  fetchAuth<UsuarioSistema>("/2fa/disable", {
+    method: "POST",
+  });
 
 // ==========================================
 // DASHBOARD & AUDITORÍA PDF

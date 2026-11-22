@@ -13,10 +13,10 @@ STOPWORDS = {
     "sobre", "entre", "hasta", "desde", "durante", "mediante", "según", "sin", "deben", "debe",
     "información", "seguridad", "organización", "sistema", "sistemas", "control", "controles",
     "otros", "asociados", "uso", "gestión", "política", "políticas", "procedimientos",
-    "definir", "aplicar", "mantener", "establecer", "asegurar", "garantizar", "mediante"
+    "definir", "aplicar", "mantener", "establecer", "asegurar", "garantizar", "mediante",
+    "estado", "evidencia", "implementado", "cumplimiento", "anexo", "iso", "27001"
 }
 
-# Diccionario de sinónimos técnicos ISO 27001 para mejorar la precisión semántica
 SINONIMOS_ISO = {
     "respaldo": ["backup", "copia", "copias", "recuperacion", "restauracion"],
     "copias": ["backup", "respaldo", "respaldos", "recuperacion"],
@@ -33,6 +33,72 @@ SINONIMOS_ISO = {
     "registros": ["logs", "bitacora", "auditoria", "monitoreo", "siem", "trazabilidad"],
     "privacidad": ["pii", "datos personales", "gdpr", "ley 19628", "titulares"],
 }
+
+INDICADORES_NO_APPLICABLE = [
+    "no aplica",
+    "excluido",
+    "excluida",
+]
+
+INDICADORES_NO_CUMPLE = [
+    "no implementado",
+    "no implementada",
+    "sin implementar",
+    "no cumple",
+    "incumple",
+    "incumplimiento",
+    "inexistente",
+    "no existe",
+    "no se cuenta con",
+    "no cuenta con",
+    "carece de",
+    "sin evidencia",
+    "no documentado",
+    "no documentada",
+    "no definido",
+    "no definida",
+    "pendiente de implementacion",
+    "brecha critica",
+    "brecha alta",
+    "0%",
+]
+
+INDICADORES_PARCIAL = [
+    "parcial",
+    "cumplimiento parcial",
+    "cumple parcialmente",
+    "parcialmente implementado",
+    "parcialmente implementada",
+    "en proceso",
+    "en desarrollo",
+    "en curso",
+    "en revision",
+    "en borrador",
+    "borrador",
+    "preliminar",
+    "informal",
+    "sin formalizar",
+    "requiere mejora",
+    "requiere actualizacion",
+    "desactualizado",
+    "desactualizada",
+    "solo en algunas areas",
+    "50%",
+]
+
+INDICADORES_CUMPLE = [
+    "implementado",
+    "implementada",
+    "cumple totalmente",
+    "cumplimiento total",
+    "operativo",
+    "operativa",
+    "vigente",
+    "formalizado",
+    "formalizada",
+    "conforme",
+    "100%",
+]
 
 MAPEO_AREAS_POR_CONTROL = {
     "A.5.1": ("Seguridad de la Información", ["Dirección y Gerencia"]),
@@ -57,8 +123,11 @@ MAPEO_AREAS_POR_CONTROL = {
 
 
 def normalizar_texto(texto: str) -> str:
-    """Elimina tildes y pasa a minúsculas para evitar falsos negativos por acentuación."""
+    """Elimina tildes, unifica caracteres griegos homógrafos (ej. Α -> A) y pasa a minúsculas."""
+    texto = texto.replace("\u0391", "A").replace("\u03b1", "a")
     texto = texto.lower()
+    # Unificar saltos de línea dentro de celdas partidas como "no\nimplementado" -> "no implementado"
+    texto = re.sub(r'\s+', ' ', texto)
     return "".join(
         c for c in unicodedata.normalize("NFD", texto)
         if unicodedata.category(c) != "Mn"
@@ -111,6 +180,77 @@ def extraer_terminos_clave(titulo: str, descripcion: str | None) -> list[str]:
     return terminos
 
 
+def aislar_seccion_detalle_soa(texto_norm: str) -> str:
+    """
+    Si el documento contiene la sección '3. detalle de controles' y secciones posteriores
+    ('4. controles excluidos' o '5. plan de tratamiento'), aísla solo la sección 3
+    para que los códigos listados en el plan de tratamiento no contaminen el análisis.
+    """
+    inicio_sec3 = re.search(r'3\.\s*detalle de controles', texto_norm)
+    texto_trabajo = texto_norm[inicio_sec3.start():] if inicio_sec3 else texto_norm
+
+    fin_sec3 = re.search(r'4\.\s*controles excluidos|5\.\s*plan de tratamiento', texto_trabajo)
+    if fin_sec3:
+        texto_trabajo = texto_trabajo[:fin_sec3.start()]
+
+    return texto_trabajo
+
+
+def extraer_estado_control_soa(texto_detalle: str, codigo_norm: str) -> tuple[str | None, str | None]:
+    """
+    Localiza el código de control (ej. 'a.5.10') dentro de la tabla del Anexo A.
+    Soporta tanto filas individuales como celdas agrupadas por pypdf donde aparecen
+    N códigos seguidos de N estados ('implementado', 'parcial', 'no implementado', 'no aplica').
+    Retorna (estado_detectado, fragmento_contexto).
+    """
+    matches = list(re.finditer(rf'\b{re.escape(codigo_norm)}\b', texto_detalle))
+    if not matches:
+        return None, None
+
+    match = matches[0]
+    # Verificar si hay códigos inmediatamente antes formando un bloque agrupado por pypdf
+    pre_ventana = texto_detalle[max(0, match.start() - 160):match.start()]
+    codigos_previos = re.findall(r'\ba\.[5-8]\.\d{1,2}\b', pre_ventana)
+
+    # Tomar hasta 900 caracteres hacia adelante, cortando cuando empiece el siguiente bloque de código
+    post_texto = texto_detalle[match.end():min(len(texto_detalle), match.end() + 950)]
+
+    # Detectar si inmediatamente después vienen otros códigos consecutivos (bloque agrupado)
+    codigos_consecutivos = re.match(r'^(?:\s*a\.[5-8]\.\d{1,2}\b)+', post_texto)
+    if codigos_consecutivos:
+        # Saltar los códigos consecutivos del mismo grupo para llegar a sus estados
+        resto_bloque = post_texto[codigos_consecutivos.end():]
+        siguiente_grupo = re.search(r'\ba\.[5-8]\.\d{1,2}\b', resto_bloque)
+        if siguiente_grupo:
+            resto_bloque = resto_bloque[:siguiente_grupo.start()]
+
+        # Extraer la secuencia ordenada de estados en ese bloque
+        estados_en_bloque = re.findall(
+            r'\b(no implementado|no aplica|parcial|implementado)\b',
+            resto_bloque
+        )
+        indice_en_grupo = len(codigos_previos)
+        if estados_en_bloque and indice_en_grupo < len(estados_en_bloque):
+            estado_tok = estados_en_bloque[indice_en_grupo]
+            return estado_tok, resto_bloque[:220]
+
+    # Caso fila individual: cortar justo antes del siguiente código a.[5-8].[0-9]+
+    siguiente_ctrl = re.search(r'\ba\.[5-8]\.\d{1,2}\b', post_texto)
+    fragmento = post_texto[:siguiente_ctrl.start()] if siguiente_ctrl else post_texto
+
+    # Evaluar en orden estricto de prioridad (No aplica -> No implementado -> Parcial -> Implementado)
+    if any(ind in fragmento for ind in INDICADORES_NO_APPLICABLE):
+        return "no aplica", fragmento
+    if any(ind in fragmento for ind in INDICADORES_NO_CUMPLE):
+        return "no implementado", fragmento
+    if any(ind in fragmento for ind in INDICADORES_PARCIAL):
+        return "parcial", fragmento
+    if any(ind in fragmento for ind in INDICADORES_CUMPLE):
+        return "implementado", fragmento
+
+    return "indeterminado", fragmento
+
+
 def generar_hash_auditoria(payload: dict) -> str:
     contenido_serializado = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(contenido_serializado).hexdigest()
@@ -133,6 +273,7 @@ def analizar_pdf_iso27001(
         raise ValueError("El archivo PDF no contiene texto extraíble.")
 
     texto_norm = normalizar_texto(texto_pdf)
+    texto_detalle_soa = aislar_seccion_detalle_soa(texto_norm)
 
     # Normalizar áreas seleccionadas
     lista_areas = [a.strip() for a in (areas_seleccionadas or []) if a.strip()]
@@ -188,16 +329,16 @@ def analizar_pdf_iso27001(
             es_responsable_principal=(area_obj.nombre == responsable_principal)
         ))
 
-    # Factor de exigencia según valoración CID (promedio 1..5 -> ajuste entre -0.08 y +0.08 en umbral)
     promedio_cid = (confidencialidad + integridad + disponibilidad) / 3.0
-    ajuste_exigencia_cid = (promedio_cid - 3.0) * 0.04  # CID 5/5/5 exige +8% más densidad de evidencia
+    ajuste_exigencia_cid = (promedio_cid - 3.0) * 0.03
 
-    umbral_cumple = min(0.55, max(0.25, 0.35 + ajuste_exigencia_cid))
-    umbral_parcial = min(0.30, max(0.12, 0.18 + (ajuste_exigencia_cid * 0.5)))
+    umbral_cumple = min(0.72, max(0.45, 0.56 + ajuste_exigencia_cid))
+    umbral_parcial = min(0.44, max(0.24, 0.32 + (ajuste_exigencia_cid * 0.5)))
 
     cumplen = 0
     parciales = 0
     no_cumplen = 0
+    excluidos = 0
     detalle_controles = []
 
     resumen_categorias = {
@@ -209,7 +350,7 @@ def analizar_pdf_iso27001(
 
     metricas_por_area: dict[str, dict] = {}
 
-    # 5. Evaluar cada cláusula del Anexo A con densidad + sinónimos + mención explícita de código
+    # 5. Evaluar cada cláusula del Anexo A
     for clausula in politica.clausulas:
         categoria_anexo = clausula.categoria_anexo or inferir_categoria_anexo(clausula.codigo_clausula)
         area_resp_ctrl, areas_colab_ctrl = inferir_responsables_control(
@@ -220,8 +361,8 @@ def analizar_pdf_iso27001(
         terminos = extraer_terminos_clave(clausula.titulo, clausula.descripcion)
         codigo_norm = normalizar_texto(clausula.codigo_clausula)
 
-        # Detectar si el documento cita explícitamente el código de control (ej. "a.5.1" o "a.8.28")
-        cita_codigo_explicito = bool(re.search(rf'\b{re.escape(codigo_norm)}\b', texto_norm))
+        estado_soa, fragmento_soa = extraer_estado_control_soa(texto_detalle_soa, codigo_norm)
+        ambito_busqueda = fragmento_soa if fragmento_soa is not None else texto_norm
 
         coincidencias = []
         frecuencia_total = 0
@@ -229,69 +370,111 @@ def analizar_pdf_iso27001(
             variantes = [t] + SINONIMOS_ISO.get(t, [])
             hits_termino = 0
             for var in variantes:
-                hits_termino += len(re.findall(rf'\b{re.escape(var)}\b', texto_norm))
+                hits_termino += len(re.findall(rf'\b{re.escape(var)}\b', ambito_busqueda))
             if hits_termino > 0:
                 coincidencias.append(t)
-                frecuencia_total += min(hits_termino, 4)  # tope de 4 repeticiones por término
+                frecuencia_total += min(hits_termino, 3)
 
         ratio_cobertura = (len(coincidencias) / len(terminos)) if terminos else 0.0
-        # Bonificación si hay profundidad (múltiples menciones) o cita explícita del control
-        score_evidencia = ratio_cobertura + (0.25 if cita_codigo_explicito else 0.0) + min(0.15, frecuencia_total * 0.015)
+        score_evidencia = ratio_cobertura + min(0.10, frecuencia_total * 0.012)
 
-        if cita_codigo_explicito or (len(coincidencias) >= 2 and score_evidencia >= umbral_cumple):
-            estado = "CUMPLE"
-            puntos = 1.0
-            cumplen += 1
-            hallazgo = (
-                f"Evidencia sólida ({', '.join(coincidencias[:5])}"
-                f"{'; referencia explícita ' + clausula.codigo_clausula if cita_codigo_explicito else ''})."
-            )
-            accion = None
-        elif len(coincidencias) >= 2 and score_evidencia >= umbral_parcial:
-            estado = "CUMPLE_PARCIAL"
-            puntos = 0.5
-            parciales += 1
-            hallazgo = f"Evidencia parcial detectada (términos: {', '.join(coincidencias[:4])})."
-            accion = (
-                f"[{area_resp_ctrl}] Reforzar control {clausula.codigo_clausula} ({clausula.titulo}): "
-                f"{clausula.descripcion or 'Completar documentación según ISO/IEC 27001:2022.'}"
-            )
+        # Caso A: El documento tiene estructura SoA / referencia explícita al control
+        if estado_soa is not None:
+            if estado_soa == "no aplica":
+                estado = "NO_APLICA"
+                puntos = 0.0
+                excluidos += 1
+                hallazgo = f"Control {clausula.codigo_clausula} excluido con justificación en SoA (No aplica)."
+                accion = None
+            elif estado_soa == "no implementado":
+                estado = "NO_CUMPLE"
+                puntos = 0.0
+                no_cumplen += 1
+                hallazgo = f"Control {clausula.codigo_clausula} declarado como No implementado (sin evidencia)."
+                accion = (
+                    f"[{area_resp_ctrl}] Implementar control {clausula.codigo_clausula} ({clausula.titulo}): "
+                    f"{clausula.descripcion or 'Definir y documentar procedimiento según ISO/IEC 27001:2022.'}"
+                )
+            elif estado_soa == "parcial":
+                estado = "CUMPLE_PARCIAL"
+                puntos = 0.5
+                parciales += 1
+                hallazgo = f"Control {clausula.codigo_clausula} con implementación parcial o en borrador."
+                accion = (
+                    f"[{area_resp_ctrl}] Reforzar control {clausula.codigo_clausula} ({clausula.titulo}): "
+                    f"{clausula.descripcion or 'Completar y aprobar documentación según ISO/IEC 27001:2022.'}"
+                )
+            elif estado_soa == "implementado":
+                estado = "CUMPLE"
+                puntos = 1.0
+                cumplen += 1
+                hallazgo = f"Control {clausula.codigo_clausula} implementado y respaldado con evidencia documental."
+                accion = None
+            else:
+                estado = "CUMPLE_PARCIAL"
+                puntos = 0.5
+                parciales += 1
+                hallazgo = f"Control {clausula.codigo_clausula} citado sin estado concluyente."
+                accion = (
+                    f"[{area_resp_ctrl}] Reforzar control {clausula.codigo_clausula} ({clausula.titulo}): "
+                    f"{clausula.descripcion or 'Completar evidencia formal según ISO/IEC 27001:2022.'}"
+                )
+
+        # Caso B: Documento de narrativa libre sin códigos A.x.x
         else:
-            estado = "NO_CUMPLE"
-            puntos = 0.0
-            no_cumplen += 1
-            hallazgo = (
-                "Sin evidencia suficiente en el documento."
-                if not coincidencias
-                else f"Mención aislada insuficiente ({', '.join(coincidencias)})."
-            )
-            accion = (
-                f"[{area_resp_ctrl}] Implementar control {clausula.codigo_clausula} ({clausula.titulo}): "
-                f"{clausula.descripcion or 'Definir y documentar procedimiento según ISO/IEC 27001:2022.'}"
-            )
+            min_terminos_cumple = min(3, max(2, len(terminos)))
+            if len(coincidencias) >= min_terminos_cumple and score_evidencia >= umbral_cumple:
+                estado = "CUMPLE"
+                puntos = 1.0
+                cumplen += 1
+                hallazgo = f"Evidencia semántica sólida ({', '.join(coincidencias[:5])})."
+                accion = None
+            elif len(coincidencias) >= 2 and score_evidencia >= umbral_parcial:
+                estado = "CUMPLE_PARCIAL"
+                puntos = 0.5
+                parciales += 1
+                hallazgo = f"Evidencia parcial detectada (términos: {', '.join(coincidencias[:4])})."
+                accion = (
+                    f"[{area_resp_ctrl}] Reforzar control {clausula.codigo_clausula} ({clausula.titulo}): "
+                    f"{clausula.descripcion or 'Completar documentación según ISO/IEC 27001:2022.'}"
+                )
+            else:
+                estado = "NO_CUMPLE"
+                puntos = 0.0
+                no_cumplen += 1
+                hallazgo = (
+                    "Sin evidencia suficiente en el documento."
+                    if not coincidencias
+                    else f"Mención aislada insuficiente ({', '.join(coincidencias)})."
+                )
+                accion = (
+                    f"[{area_resp_ctrl}] Implementar control {clausula.codigo_clausula} ({clausula.titulo}): "
+                    f"{clausula.descripcion or 'Definir y documentar procedimiento según ISO/IEC 27001:2022.'}"
+                )
 
-        if categoria_anexo in resumen_categorias:
-            resumen_categorias[categoria_anexo]["total"] += 1
-            if estado == "CUMPLE":
-                resumen_categorias[categoria_anexo]["cumplen"] += 1
-            elif estado == "CUMPLE_PARCIAL":
-                resumen_categorias[categoria_anexo]["parciales"] += 1
+        if estado != "NO_APLICA":
+            if categoria_anexo in resumen_categorias:
+                resumen_categorias[categoria_anexo]["total"] += 1
+                if estado == "CUMPLE":
+                    resumen_categorias[categoria_anexo]["cumplen"] += 1
+                elif estado == "CUMPLE_PARCIAL":
+                    resumen_categorias[categoria_anexo]["parciales"] += 1
 
-        for area_nom in areas_ctrl_totales:
-            if area_nom not in metricas_por_area:
-                metricas_por_area[area_nom] = {"controles_asignados": 0, "puntos": 0.0, "brechas": 0}
-            metricas_por_area[area_nom]["controles_asignados"] += 1
-            metricas_por_area[area_nom]["puntos"] += puntos
-            if estado != "CUMPLE":
-                metricas_por_area[area_nom]["brechas"] += 1
+            for area_nom in areas_ctrl_totales:
+                if area_nom not in metricas_por_area:
+                    metricas_por_area[area_nom] = {"controles_asignados": 0, "puntos": 0.0, "brechas": 0}
+                metricas_por_area[area_nom]["controles_asignados"] += 1
+                metricas_por_area[area_nom]["puntos"] += puntos
+                if estado != "CUMPLE":
+                    metricas_por_area[area_nom]["brechas"] += 1
 
-        if estado != "CUMPLE":
+        if estado in ("NO_CUMPLE", "CUMPLE_PARCIAL"):
             criticidad = (
                 "Crítico"
                 if estado == "NO_CUMPLE" and (confidencialidad + integridad + disponibilidad) >= 12
                 else ("Alto" if estado == "NO_CUMPLE" else "Medio")
             )
-            confianza = round(min(98.0, 62.0 + (score_evidencia * 45)), 2)
+            confianza = round(min(98.0, 74.0 + (score_evidencia * 25)), 2)
 
             sugerencia = models.SugerenciaIA(
                 id_activo=nuevo_activo.id_activo,
@@ -314,9 +497,10 @@ def analizar_pdf_iso27001(
             "accion_remediacion": accion
         })
 
-    # 6. Calcular cumplimiento global
-    total = len(politica.clausulas)
-    porcentaje_cumplimiento = round(((cumplen * 1.0) + (parciales * 0.5)) / total * 100, 2)
+    # 6. Calcular cumplimiento global sobre controles aplicables
+    total_catalogo = len(politica.clausulas)
+    total_aplicables = max(1, total_catalogo - excluidos)
+    porcentaje_cumplimiento = round(((cumplen * 1.0) + (parciales * 0.5)) / total_aplicables * 100, 2)
     porcentaje_brecha = round(100.0 - porcentaje_cumplimiento, 2)
 
     eval_politica = models.ActivoPolitica(
@@ -331,9 +515,9 @@ def analizar_pdf_iso27001(
         nivel_r = "Alto" if porcentaje_brecha >= 50.0 else "Medio"
         riesgo_detectado = models.Riesgo(
             id_activo=nuevo_activo.id_activo,
-            descripcion=f"Brecha de cumplimiento del {porcentaje_brecha}% frente a {politica.codigo_norma} ({no_cumplen} controles incumplidos).",
+            descripcion=f"Brecha de cumplimiento del {porcentaje_brecha}% frente a {politica.codigo_norma} ({no_cumplen} controles incumplidos, {parciales} parciales).",
             impacto="Alto" if confidencialidad >= 4 else "Medio",
-            probabilidad="Frecuente" if no_cumplen > (total / 2) else "Moderada",
+            probabilidad="Frecuente" if no_cumplen > (total_aplicables / 2) else "Moderada",
             nivel_riesgo=nivel_r
         )
         db.add(riesgo_detectado)
@@ -346,6 +530,8 @@ def analizar_pdf_iso27001(
         "areas_involucradas": lista_areas,
         "valoracion_cid": {"c": confidencialidad, "i": integridad, "d": disponibilidad},
         "porcentaje_cumplimiento": porcentaje_cumplimiento,
+        "controles_aplicables": total_aplicables,
+        "controles_excluidos": excluidos,
         "cumplen": cumplen,
         "parciales": parciales,
         "no_cumplen": no_cumplen
@@ -383,7 +569,8 @@ def analizar_pdf_iso27001(
         "area_principal": responsable_principal,
         "areas_seleccionadas": lista_areas,
         "resumen_gap_analysis": {
-            "total_controles_evaluados": total,
+            "total_controles_evaluados": total_aplicables,
+            "controles_excluidos": excluidos,
             "cumplen": cumplen,
             "cumplen_parcial": parciales,
             "no_cumplen": no_cumplen,
