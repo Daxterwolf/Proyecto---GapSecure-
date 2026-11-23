@@ -56,21 +56,21 @@ interface AvisoModalState {
   tipo: "error" | "info";
 }
 
-function UserAvatarIcon({ className = "h-4 w-4" }: { className?: string }) {
+function UserAvatarIcon({
+  esAdmin = false,
+  className = "h-full w-full",
+}: {
+  esAdmin?: boolean;
+  className?: string;
+}) {
+  const src = esAdmin ? "/img/img-usuario.jpg" : "/img/img-usuario-auditor.jpg";
+
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"
-      />
-    </svg>
+    <img
+      src={src}
+      alt={esAdmin ? "Avatar Administrador" : "Avatar Auditor"}
+      className={`${className} rounded-full object-cover`}
+    />
   );
 }
 
@@ -399,7 +399,7 @@ export default function DashboardPage() {
         : areasEnviar[0];
 
     try {
-      await analizarPdfAuditoria({
+      const resultado = await analizarPdfAuditoria({
         archivo: archivoPdf,
         area_organizativa: principalEnviar,
         areas_seleccionadas: areasEnviar,
@@ -410,6 +410,15 @@ export default function DashboardPage() {
       setArchivoPdf(null);
       setMensajeAuditor("Documento auditado exitosamente bajo ISO/IEC 27001:2022.");
       await cargarDatos();
+const resObj = resultado as {
+        id_activo?: number;
+        activo?: { id_activo?: number };
+      };
+      const nuevoIdActivo = resObj?.id_activo ?? resObj?.activo?.id_activo;
+      if (nuevoIdActivo) {
+        const det = await getDashboardActivoDetalle(nuevoIdActivo);
+        setDetalleActivo(det);
+      }
       if (esAdmin) {
         setTabAdmin("auditoria");
       } else {
@@ -475,6 +484,11 @@ export default function DashboardPage() {
       </div>
     );
   }
+
+  const motorAnalisisActual = String(
+    (detalleActivo?.evaluacion?.metricas_gap as Record<string, unknown> | undefined)
+      ?.motor_analisis || ""
+  );
 
   // Formulario reutilizable de carga PDF con multi-selección de áreas
   const renderFormularioPdf = () => (
@@ -687,8 +701,8 @@ export default function DashboardPage() {
 
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3">
-            <div className="hidden sm:flex h-9 w-9 items-center justify-center rounded-full border border-sky-300/25 bg-sky-400/10 text-sky-300">
-              <UserAvatarIcon className="h-4 w-4" />
+            <div className="hidden sm:flex h-9 w-9 items-center justify-center rounded-full border border-sky-300/35 bg-sky-400/10 overflow-hidden shadow-sm">
+              <UserAvatarIcon esAdmin={esAdmin} />
             </div>
             <div className="text-right hidden sm:block">
               <p className="text-xs font-semibold text-slate-100">
@@ -857,13 +871,13 @@ export default function DashboardPage() {
                       <td className="py-4 px-6">
                         <div className="flex items-center gap-3">
                           <span
-                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border overflow-hidden ${
                               u.id_rol === 1
-                                ? "border-amber-400/40 bg-amber-400/12 text-amber-300"
-                                : "border-sky-400/40 bg-sky-400/12 text-sky-300"
+                                ? "border-amber-400/50 bg-amber-400/12"
+                                : "border-sky-400/50 bg-sky-400/12"
                             }`}
                           >
-                            <UserAvatarIcon className="h-4 w-4" />
+                            <UserAvatarIcon esAdmin={u.id_rol === 1} />
                           </span>
                           <span className="font-medium text-slate-100">{u.nombre_completo}</span>
                         </div>
@@ -1329,9 +1343,22 @@ export default function DashboardPage() {
                 ) : (
                   <>
                     <div className="border-b border-sky-300/15 pb-4">
-                      <span className="text-[10px] font-semibold tracking-[0.22em] uppercase text-sky-300">
-                        INFORME TÉCNICO DE REMEDIACIÓN · ANEXO A (93 CONTROLES)
-                      </span>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold tracking-[0.22em] uppercase text-sky-300">
+                          INFORME TÉCNICO DE REMEDIACIÓN · ANEXO A (93 CONTROLES)
+                        </span>
+                        {motorAnalisisActual && (
+                          <span
+                            className={`rounded-full px-3 py-0.5 text-[10px] font-semibold tracking-[0.14em] uppercase border ${
+                              motorAnalisisActual.toLowerCase().includes("gemini")
+                                ? "border-emerald-400/45 bg-emerald-400/15 text-emerald-300"
+                                : "border-amber-400/45 bg-amber-400/15 text-amber-300"
+                            }`}
+                          >
+                            Motor: {motorAnalisisActual}
+                          </span>
+                        )}
+                      </div>
                       <h3 className="text-xl font-semibold text-white mt-1">
                         {detalleActivo.activo.nombre}
                       </h3>
